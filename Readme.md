@@ -20,14 +20,17 @@ primary_branch: main
 
 2. Reboot printer
 3. Update plugin repo
+   
    <img width="1046" height="422" alt="{EB2C300D-573D-46FF-87D4-0CDC3AB7DBE8}" src="https://github.com/user-attachments/assets/cac41d72-b0f2-4882-b3ba-0233fa011dfc" />
-4. Recover Repo
+5. Recover Repo
+   
    <img width="1005" height="198" alt="{10CBA32D-53AB-47C4-B723-0B253BDE56C9}" src="https://github.com/user-attachments/assets/62b0fd78-c498-4194-9ebc-2616b44e9162" />
 
-6. Run the command: ```ENABLE_PLUGIN name=flook32```
+7. Run the command: ```ENABLE_PLUGIN name=flook32```
+   
    <img width="351" height="66" alt="{1D378E9A-6CBF-473C-9D89-ACEBB2E1EB33}" src="https://github.com/user-attachments/assets/9c1a480d-9765-4469-a4c6-b6668dffb72a" />
 
-8. Add to `mod_data/user.cfg` flook32 values
+9. Add to `mod_data/user.cfg` flook32 values
 
 ```
 [temperature_sensor chamber]
