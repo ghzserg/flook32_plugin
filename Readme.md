@@ -32,6 +32,8 @@ primary_branch: main
 
 9. Add to `mod_data/user.cfg` flook32 values
 
+Standart [flook32.cfg](https://github.com/ghzserg/flook32_plugin/blob/main/flook32.cfg) automated include
+
 ```
 [temperature_sensor chamber]
 sensor_type: flook32
