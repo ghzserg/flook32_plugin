@@ -1,4 +1,7 @@
-#Flook32
+# Flook32
+
+Author: @schreider
+Fixes: @solitairweb
 
 https://github.com/schreider/flook32
 
@@ -35,5 +38,3 @@ sensor_type: flook32
 #                                  # False - выводить все сообщения в консоль
 ...
 ```
-
-@schreider @solitairweb
