@@ -51,3 +51,30 @@ sensor_type: flook32
 #                                  # False - выводить все сообщения в консоль
 ...
 ```
+# PS
+Данный способ описывает подключение плагина со значением по умолчанию, то есть без управления из клиппер, только отображение графика нагрева камеры. 
+
+Чтобы добавить макрокоманды в интерфейс Fluid, необходимо скопировать `flook32.cfg` в `mod data` и раскоментировать необходимые строки.
+```
+# ИНТЕГРАЦИЯ СО СЛАЙСЕРОМ (M141 / M191):                       
+#   -----------------------------------------------------------------
+#                                                                    
+[gcode_macro M141]
+gcode:
+   {% set S = params.S|default(0)|float %}
+   FLOOK_SET S={S}
+                                                                    
+[gcode_macro M191]
+gcode:
+   {% set S = params.S|default(0)|float %}
+       FLOOK_SET S={S}
+       {% if S > 0 %}
+           TEMPERATURE_WAIT SENSOR="temperature_sensor chamber" MINIMUM={S-2} MAXIMUM={S+2}
+       {% endif %}
+```
+
+В `mod_data/user.cfg` добавить строчку
+
+```
+[include flook32.cfg]
+```
