@@ -32,31 +32,31 @@ primary_branch: main
 
 9. Add to `mod_data/user.cfg` flook32 values
 
-Standart [flook32.cfg](https://github.com/ghzserg/flook32_plugin/blob/main/flook32.cfg) automated include
+Standard [flook32.cfg](https://github.com/ghzserg/flook32_plugin/blob/main/flook32.cfg) automated include
 
 ```
 [temperature_sensor chamber]
 sensor_type: flook32
 
-#   sensor_type: flook32           # тип датчика (обязательно)
-#   flook_ip: 192.168.1.37         # IP адрес (опционально)
-#   flook_port: 80                 # порт HTTP/WebSocket
-#   auto_discover: True            # авто-поиск по UDP (по умолч. True)
-#   report_interval: 10.0          # ⚠️ ТОЛЬКО ДЛЯ HTTP РЕЖИМА ⚠️
-#                                  # Интервал опроса через HTTP (сек)
-#                                  # Диапазон: 5-60 сек, по умолч. 10 сек
-#                                  # НЕ влияет на WebSocket!
-#   silent: False                  # Тихий режим
-#                                  # True  - НЕ выводить сообщения в консоль
-#                                  # False - выводить все сообщения в консоль
+#   sensor_type: flook32           # sensor type (required)
+#   flook_ip: 192.168.1.37         # IP address (optional)
+#   flook_port: 80                 # HTTP/WebSocket port
+#   auto_discover: True            # auto-discovery via UDP (default True)
+#   report_interval: 10.0          # ⚠️ HTTP MODE ONLY ⚠️
+#                                  # HTTP polling interval (sec)
+#                                  # Range: 5-60 sec, default 10 sec
+#                                  # Does NOT affect WebSocket!
+#   silent: False                  # Silent mode
+#                                  # True  - do NOT output messages to console
+#                                  # False - output all messages to console
 ...
 ```
 # PS
-Данный способ описывает подключение плагина со значением по умолчанию, то есть без управления из клиппер, только отображение графика нагрева камеры. 
+This method describes connecting the plugin with default values, i.e., without control from Klipper, only displaying the chamber heating graph.
 
-Чтобы добавить макрокоманды в интерфейс Fluidd, необходимо скопировать `flook32.cfg` в `mod data` и раскоментировать необходимые строки.
+To add macros to the Fluidd interface, you need to copy `flook32.cfg` to `mod data` and uncomment the necessary lines.
 ```
-# ИНТЕГРАЦИЯ СО СЛАЙСЕРОМ (M141 / M191):                       
+# SLICER INTEGRATION (M141 / M191):                       
 #   -----------------------------------------------------------------
 #                                                                    
 [gcode_macro M141]
@@ -73,7 +73,7 @@ gcode:
        {% endif %}
 ```
 
-В `mod_data/user.cfg` добавить строчку
+In `mod_data/user.cfg` add the line
 
 ```
 [include flook32.cfg]
