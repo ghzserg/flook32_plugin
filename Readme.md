@@ -3,7 +3,8 @@
 Author: @schreider
 Fixes: @solitairweb
 
-https://github.com/schreider/flook32
+- (Flook32 Original Russian)[https://github.com/schreider/flook32]
+- (Flook32 Translate English)[https://github.com/ghzserg/flook32]
 
 1. Update plugin repo
    
