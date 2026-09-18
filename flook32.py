@@ -4,188 +4,188 @@
 # FLOOK32 Sensor for Klipper
 # ============================================================================
 # 
-# Плагин для интеграции контроллера термокамеры FLOOK32 в экосистему Klipper.
-# Обеспечивает двустороннюю связь: чтение температуры воздуха через REST API
-# или WebSocket, управление нагревом через G-код команды, мониторинг ошибок.
+# Plugin for integrating the FLOOK32 thermal chamber controller into the Klipper ecosystem.
+# Provides bidirectional communication: reads air temperature via REST API
+# or WebSocket, controls heating via G-code commands, monitors errors.
 #
 # Copyright (C) 2026 t.me/schreid
 # This program is free software under GPLv3.
-# Полный текст лицензии: https://www.gnu.org/licenses/gpl-3.0.html
+# Full license text: https://www.gnu.org/licenses/gpl-3.0.html
 #
 # ═══════════════════════════════════════════════════════════════════════════════
-#                              ПРИНЦИП РАБОТЫ
+#                              HOW IT WORKS
 # ═══════════════════════════════════════════════════════════════════════════════
 #
-# Плагин регистрирует виртуальный датчик температуры в Klipper и связывается
-# с FLOOK32 в локальной сети. Температура обновляется в реальном времени через WebSocket
-# (если установлен websocket-client) или периодическим HTTP-опросом (fallback).
+# The plugin registers a virtual temperature sensor in Klipper and communicates
+# with FLOOK32 on the local network. Temperature is updated in real time via WebSocket
+# (if websocket-client is installed) or periodic HTTP polling (fallback).
 #
 # ═══════════════════════════════════════════════════════════════════
-#                         РЕЖИМЫ ПОДКЛЮЧЕНИЯ
+#                         CONNECTION MODES
 # ═══════════════════════════════════════════════════════════════════
 #
-# 1. РУЧНОЙ РЕЖИМ (flook_ip задан в конфиге):
-#    • Плагин сразу подключается по указанному IP
-#    • UDP-обнаружение не используется для подключения
-#    • При первом HTTP-ответе отправляет UDP-запрос с ID устройства,
-#      чтобы FLOOK32 сохранил IP Klipper для работы Moonraker
-#    • При потере связи продолжает стучаться по тому же IP
+# 1. MANUAL MODE (flook_ip set in config):
+#    • The plugin connects immediately to the specified IP
+#    • UDP discovery is not used for connection
+#    • On the first HTTP response, sends a UDP request with the device ID
+#      so FLOOK32 saves Klipper's IP for Moonraker operation
+#    • If connection is lost, keeps trying the same IP
 #
-# 2. АВТОМАТИЧЕСКИЙ РЕЖИМ (flook_ip не задан, auto_discover=True):
-#    • Плагин запускает UDP-слушатель на порту 12345
-#    • Отправляет broadcast-запрос FLOOK_DISCOVERY
-#    • FLOOK32 отвечает с указанием TRUE/FALSE (совпадение ID)
-#    • При первом запуске выбирает устройство с наименьшим uptime
-#    • Сохраняет ID устройства для последующих подключений
-#    • При потере связи перезапускает UDP-поиск
+# 2. AUTOMATIC MODE (flook_ip not set, auto_discover=True):
+#    • The plugin starts a UDP listener on port 12345
+#    • Sends a broadcast request FLOOK_DISCOVERY
+#    • FLOOK32 responds with TRUE/FALSE (ID match)
+#    • On first launch, selects the device with the lowest uptime
+#    • Saves the device ID for subsequent connections
+#    • On connection loss, restarts UDP discovery
 #
 # ═══════════════════════════════════════════════════════════════════
-#                    ПЕРЕДАЧА ТЕМПЕРАТУРЫ
+#                    TEMPERATURE TRANSMISSION
 # ═══════════════════════════════════════════════════════════════════
 #
-# 1. WEBSOCKET (приоритетный):
-#    • Данные поступают в реальном времени (каждую секунду)
-#    • Формат: JSON с полями a (воздух), h (нагреватель), tg (цель)
-#    • Автоматическое переподключение при обрыве
-#    • При активном WebSocket HTTP-опрос НЕ выполняется
+# 1. WEBSOCKET (preferred):
+#    • Data arrives in real time (every second)
+#    • Format: JSON with fields a (air), h (heater), tg (target)
+#    • Automatic reconnection on disconnect
+#    • While WebSocket is active, HTTP polling is NOT performed
 #
 # 2. HTTP POLLING (fallback):
-#    • Периодический запрос GET /api/all
-#    • Интервал: report_interval (5-60 сек, по умолчанию 10)
-#    • Используется когда WebSocket недоступен или не установлен
+#    • Periodic request GET /api/all
+#    • Interval: report_interval (5-60 sec, default 10)
+#    • Used when WebSocket is unavailable or not installed
 #
 # ═══════════════════════════════════════════════════════════════════
-#                    UDP ОБНАРУЖЕНИЕ (ПРОТОКОЛ)
+#                    UDP DISCOVERY (PROTOCOL)
 # ═══════════════════════════════════════════════════════════════════
 #
-# Формат запроса (плагин → FLOOK32):
-#   FLOOK_DISCOVERY:<device_id>   — с указанием ID (если сохранён)
-#   FLOOK_DISCOVERY               — без ID (первый запуск)
+# Request format (plugin → FLOOK32):
+#   FLOOK_DISCOVERY:<device_id>   — with ID (if saved)
+#   FLOOK_DISCOVERY               — without ID (first launch)
 #
-# Формат ответа (FLOOK32 → плагин):
-#   FLOOK32:TRUE:<IP>:<uptime>:<T_air>:<device_id>   — ID совпал
-#   FLOOK32:FALSE:<IP>:<uptime>:<T_air>:<device_id>  — ID не совпал
-#   FLOOK32:<IP>:<uptime>:<T_air>:<device_id>        — старый формат (без ID)
+# Response format (FLOOK32 → plugin):
+#   FLOOK32:TRUE:<IP>:<uptime>:<T_air>:<device_id>   — ID matched
+#   FLOOK32:FALSE:<IP>:<uptime>:<T_air>:<device_id>  — ID did not match
+#   FLOOK32:<IP>:<uptime>:<T_air>:<device_id>        — old format (without ID)
 #
-# Логика выбора устройства:
-#   • Если сохранён ID → подключается ТОЛЬКО к устройству с TRUE и совпадающим ID
-#   • Если ID не сохранён → выбирает устройство с TRUE и наименьшим uptime
-#   • Если все устройства ответили FALSE → активный поиск с указанием ID
+# Device selection logic:
+#   • If ID is saved → connects ONLY to the device with TRUE and matching ID
+#   • If ID is not saved → selects device with TRUE and lowest uptime
+#   • If all devices responded FALSE → active search with ID specified
 #
 # ═══════════════════════════════════════════════════════════════════
-#                    СОХРАНЕНИЕ ID УСТРОЙСТВА
+#                    SAVING DEVICE ID
 # ═══════════════════════════════════════════════════════════════════
 #
-# ID устройства сохраняется для того, чтобы при следующем запуске
-# плагин мог подключиться к ТОМУ ЖЕ FLOOK32, а не к случайному.
-# Это критично если в сети несколько принтеров с FLOOK32.
+# The device ID is saved so that on the next launch
+# the plugin can connect to THE SAME FLOOK32, not a random one.
+# This is critical if there are multiple printers with FLOOK32 on the network.
 #
-# Места хранения (в порядке приоритета):
+# Storage locations (in priority order):
 #   1. Moonraker DB (http://localhost:7125/server/database/item)
-#   2. Файл ~/.flook32_id (если Moonraker недоступен)
+#   2. File ~/.flook32_id (if Moonraker is unavailable)
 #
-# Сброс ID: команда FLOOK_RESET_ID в консоли Klipper
-#
-# ═══════════════════════════════════════════════════════════════════
-#                    ОТПРАВКА КОНФИГУРАЦИИ
-# ═══════════════════════════════════════════════════════════════════
-#
-# При первом успешном подключении плагин отправляет на FLOOK32
-# ВСЕ параметры, явно заданные в printer.cfg. Это позволяет
-# настроить устройство прямо из конфига Klipper.
-#
-# ВАЖНО: отправляются ТОЛЬКО явно заданные параметры.
-# Параметры, не указанные в конфиге, остаются без изменений
-# на устройстве (значения по умолчанию или предыдущие настройки).
+# Reset ID: FLOOK_RESET_ID command in the Klipper console
 #
 # ═══════════════════════════════════════════════════════════════════
-#                    МОНИТОРИНГ ОШИБОК
+#                    SENDING CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════
 #
-# Плагин периодически запрашивает /api/error-log и выводит
-# критические ошибки FLOOK32 в консоль Klipper с рекомендациями
-# по устранению.
+# On the first successful connection, the plugin sends to FLOOK32
+# ALL parameters explicitly specified in printer.cfg. This allows
+# configuring the device directly from the Klipper config.
 #
-# Настройки:
-#   • enable_error_notifications — вкл/выкл мониторинг
-#   • error_check_interval — периодичность проверки (15-120 сек)
-#   • error_notification_max_age — максимальный возраст ошибки
-#   • show_trends — показывать тренды температур перед ошибкой
+# IMPORTANT: ONLY explicitly specified parameters are sent.
+# Parameters not specified in the config remain unchanged
+# on the device (default values or previous settings).
 #
 # ═══════════════════════════════════════════════════════════════════
-#                    G-CODE КОМАНДЫ
+#                    ERROR MONITORING
 # ═══════════════════════════════════════════════════════════════════
 #
-# Плагин регистрирует 17 G-код команд для управления FLOOK32
-# прямо из консоли Klipper. Полный список в разделе G-CODE КОМАНДЫ.
+# The plugin periodically requests /api/error-log and outputs
+# FLOOK32 critical errors to the Klipper console with recommendations
+# for resolution.
+#
+# Settings:
+#   • enable_error_notifications — on/off monitoring
+#   • error_check_interval — check frequency (15-120 sec)
+#   • error_notification_max_age — maximum error age
+#   • show_trends — show temperature trends before the error
+#
+# ═══════════════════════════════════════════════════════════════════
+#                    G-CODE COMMANDS
+# ═══════════════════════════════════════════════════════════════════
+#
+# The plugin registers 17 G-code commands for controlling FLOOK32
+# directly from the Klipper console. Full list in the G-CODE COMMANDS section.
 #
 # ═══════════════════════════════════════════════════════════════════
 #
-# ПРИМЕР КОНФИГУРАЦИИ:
+# CONFIGURATION EXAMPLE:
 #   [flook32]
 #   
 #   [temperature_sensor chamber]
 #   sensor_type: flook32
 #   flook_ip: 192.168.1.37
 #
-# УСТАНОВКА:
-#   1. Скопируйте flook32.py в ~/klipper/klippy/extras/             
-#   2. Установите websocket-client (опционально):                   
+# INSTALLATION:
+#   1. Copy flook32.py to ~/klipper/klippy/extras/             
+#   2. Install websocket-client (optional):                   
 #      pip install websocket-client 
-#   3. Скопируйте файл flook32.cfg в папку с printer.cfg
-#   4. Добавьте [include flook32.cfg] в printer.cfg                    
-#   5. Перезапустите Klipper   
+#   3. Copy flook32.cfg to the folder with printer.cfg
+#   4. Add [include flook32.cfg] to printer.cfg                    
+#   5. Restart Klipper   
 #
-# ЗАВИСИМОСТИ:
-#   • Стандартная библиотека Python (всегда есть):
+# DEPENDENCIES:
+#   • Python standard library (always available):
 #       - socket, json, threading, select, time, logging, os
-#   • websocket-client — ОПЦИОНАЛЬНО:
-#       - Для real-time обновлений температуры
-#       - Установка: pip install websocket-client
-#       - Без него работает через HTTP polling
-#   • requests — ОПЦИОНАЛЬНО:
-#       - Для сохранения ID в Moonraker DB
-#       - Установка: pip install requests
-#       - Без него ID сохраняется в файл ~/.flook32_id
-#       - Работа плагина не нарушается
+#   • websocket-client — OPTIONAL:
+#       - For real-time temperature updates
+#       - Install: pip install websocket-client
+#       - Without it, works via HTTP polling
+#   • requests — OPTIONAL:
+#       - For saving ID in Moonraker DB
+#       - Install: pip install requests
+#       - Without it, ID is saved to file ~/.flook32_id
+#       - Plugin operation is not affected
 #
-# АВТОР: t.me/schreid
-# ВЕРСИЯ: 0.1.0b
+# AUTHOR: t.me/schreid
+# VERSION: 0.1.0b
 # ============================================================================
 
 # ============================================================================
-# ИМПОРТЫ
+# IMPORTS
 # ============================================================================
 
-# Стандартная библиотека Python — всегда доступна, не требует установки
-import socket                   # UDP/TCP сокеты для связи с FLOOK32
-import time                     # Таймеры, задержки, метки времени
-import threading                # Параллельные потоки: UDP слушатель, WebSocket
-import logging                  # Логирование в klippy.log (основной лог Klipper)
-import json                     # Парсинг JSON ответов от FLOOK32 API
-import select                   # Неблокирующий опрос UDP сокета (select/poll)
-import os                       # Работа с файловой системой (чтение/запись ~/.flook32_id)
-import sys                      # Системные функции (пути, версия Python)
+# Python standard library — always available, no installation required
+import socket                   # UDP/TCP sockets for communication with FLOOK32
+import time                     # Timers, delays, timestamps
+import threading                # Parallel threads: UDP listener, WebSocket
+import logging                  # Logging to klippy.log (main Klipper log)
+import json                     # Parsing JSON responses from FLOOK32 API
+import select                   # Non-blocking UDP socket polling (select/poll)
+import os                       # File system operations (read/write ~/.flook32_id)
+import sys                      # System functions (paths, Python version)
 
 # ============================================================================
-# ОПЦИОНАЛЬНЫЕ ЗАВИСИМОСТИ
+# OPTIONAL DEPENDENCIES
 # ============================================================================
-# Эти библиотеки не обязательны — плагин работает и без них.
-# Они подключаются динамически через try/except, чтобы избежать
-# ошибок импорта при запуске Klipper.
+# These libraries are not mandatory — the plugin works without them.
+# They are imported dynamically via try/except to avoid
+# import errors when Klipper starts.
 
-# WebSocket client — обеспечивает real-time обновление температуры.
-# Установка: pip install websocket-client
-# Если не установлен — плагин использует HTTP-опрос (медленнее).
+# WebSocket client — provides real-time temperature updates.
+# Install: pip install websocket-client
+# If not installed — the plugin uses HTTP polling (slower).
 try:
     import websocket
     HAS_WEBSOCKET = True
 except ImportError:
     HAS_WEBSOCKET = False
 
-# Requests — используется для сохранения ID устройства в Moonraker DB.
-# Входит в стандартную поставку Python в окружении Klipper.
-# Если недоступен — ID сохраняется только в файл ~/.flook32_id.
+# Requests — used for saving device ID to Moonraker DB.
+# Included in the standard Python distribution in the Klipper environment.
+# If unavailable — ID is saved only to file ~/.flook32_id.
 try:
     import requests
     HAS_REQUESTS = True
@@ -193,301 +193,301 @@ except ImportError:
     HAS_REQUESTS = False
 
 # ============================================================================
-# КОНСТАНТЫ
+# CONSTANTS
 # ============================================================================
 
-# Температурные пределы для сенсора Klipper.
-# Выход за эти границы считается ошибкой датчика.
-MIN_TEMP = -100.0              # Минимальная отображаемая температура (°C)
-MAX_TEMP = 200.0               # Максимальная отображаемая температура (°C)
+# Temperature limits for the Klipper sensor.
+# Going beyond these bounds is considered a sensor error.
+MIN_TEMP = -100.0              # Minimum displayed temperature (°C)
+MAX_TEMP = 200.0               # Maximum displayed temperature (°C)
 
-# UDP-обнаружение FLOOK32 в локальной сети.
-# Порт должен совпадать с UDP_PORT в прошивке FLOOK32.
-UDP_PORT = 12345               # Порт для отправки и приёма UDP-пакетов
-UDP_BROADCAST_IP = "255.255.255.255"  # Широковещательный адрес (все устройства в сети)
+# UDP discovery of FLOOK32 on the local network.
+# The port must match UDP_PORT in the FLOOK32 firmware.
+UDP_PORT = 12345               # Port for sending and receiving UDP packets
+UDP_BROADCAST_IP = "255.255.255.255"  # Broadcast address (all devices on the network)
 
 # ============================================================================
-# КОМПАКТНОЕ ОТОБРАЖЕНИЕ ПАРАМЕТРОВ (COMPACT MAPPING)
+# COMPACT PARAMETER MAPPING (COMPACT MAPPING)
 # ============================================================================
 # 
-# При отправке конфигурации на FLOOK32 через POST /api/config каждый параметр
-# передаётся в JSON с коротким ключом (2-4 символа) для экономии трафика и
-# размера пакета. Этот словарь сопоставляет полные имена параметров из
-# printer.cfg с короткими ключами API FLOOK32.
+# When sending configuration to FLOOK32 via POST /api/config, each parameter
+# is transmitted in JSON with a short key (2-4 characters) to save traffic and
+# packet size. This dictionary maps full parameter names from
+# printer.cfg to short FLOOK32 API keys.
 #
-# Пример:
+# Example:
 #   printer.cfg:        max_heater_temp: 100.0
-#   Короткий ключ:      mt
-#   JSON на FLOOK32:    {"mt": 100.0}
+#   Short key:          mt
+#   JSON to FLOOK32:    {"mt": 100.0}
 #
-# Используется в _send_config_to_esp() при формировании JSON для отправки.
+# Used in _send_config_to_esp() when building JSON for sending.
 
 compact_mapping = {
-    # ========== ТЕМПЕРАТУРНЫЕ ПОРОГИ ==========
-    'max_heater_temp': 'mt',              # Макс. температура нагревателя (°C)
-    'critical_temp': 'ct',                # Критическая температура (°C)
-    'critical_hysteresis': 'ch',          # Гистерезис сброса перегрева (°C)
-    'max_air_temp': 'ma',                 # Макс. температура воздуха (°C)
-    'air_hysteresis': 'ah',              # Гистерезис перегрева воздуха (°C)
-    'hysteresis': 'hy',                  # Гистерезис управления по воздуху (°C)
-    'heater_hysteresis': 'hh',           # Гистерезис нагревателя (°C)
-    'enable_heater_hysteresis': 'eH',    # Включить управление по нагревателю (bool)
-    'default_target_temp': 'dt',         # Целевая температура по умолчанию (°C)
-    'invert_heater_signal': 'iH',        # Инвертировать сигнал SSR (bool)
-    'invert_fan_signal': 'iF',           # Инвертировать сигнал вентилятора (bool)
-    'max_fan_duty': 'mFD',               # Макс. мощность вентилятора (0-1023)
+    # ========== TEMPERATURE THRESHOLDS ==========
+    'max_heater_temp': 'mt',              # Max. heater temperature (°C)
+    'critical_temp': 'ct',                # Critical temperature (°C)
+    'critical_hysteresis': 'ch',          # Overheat reset hysteresis (°C)
+    'max_air_temp': 'ma',                 # Max. air temperature (°C)
+    'air_hysteresis': 'ah',              # Air overheat hysteresis (°C)
+    'hysteresis': 'hy',                  # Air control hysteresis (°C)
+    'heater_hysteresis': 'hh',           # Heater hysteresis (°C)
+    'enable_heater_hysteresis': 'eH',    # Enable heater-based control (bool)
+    'default_target_temp': 'dt',         # Default target temperature (°C)
+    'invert_heater_signal': 'iH',        # Invert SSR signal (bool)
+    'invert_fan_signal': 'iF',           # Invert fan signal (bool)
+    'max_fan_duty': 'mFD',               # Max. fan power (0-1023)
     
-    # ========== ВЕНТИЛЯТОР ==========
-    'fan_on_temp': 'fT',                 # Температура включения вентилятора (°C)
-    'fan_off_hysteresis': 'fH',          # Гистерезис выключения вентилятора (°C)
-    'fan_min_on_time': 'fM',             # Мин. время работы (сек)
-    'fan_efficiency_timeout': 'fE',      # Таймаут проверки эффективности (сек)
-    'fan_efficiency_threshold': 'fF',    # Порог эффективности (°C)
-    'enable_fan_efficiency_check': 'eF', # Включить проверку эффективности (bool)
+    # ========== FAN ==========
+    'fan_on_temp': 'fT',                 # Fan turn-on temperature (°C)
+    'fan_off_hysteresis': 'fH',          # Fan turn-off hysteresis (°C)
+    'fan_min_on_time': 'fM',             # Min. operating time (sec)
+    'fan_efficiency_timeout': 'fE',      # Efficiency check timeout (sec)
+    'fan_efficiency_threshold': 'fF',    # Efficiency threshold (°C)
+    'enable_fan_efficiency_check': 'eF', # Enable efficiency check (bool)
     
-    # ========== THERMAL RUNAWAY (ЧЕТЫРЁХФАЗНАЯ ЗАЩИТА) ==========
-    'enable_thermal_runaway': 'tR',      # Включить защиту (bool)
-    'runaway_phase1_time': 'r1',         # Длительность фазы 1 (мин)
-    'runaway_phase2_time': 'r2',         # Длительность фазы 2 (мин)
-    'runaway_max_time_to_target': 'rT',  # Макс. время до цели (мин)
-    'runaway_quick_check_temp': 'rQC',   # Фаза 0: мин. температура нагревателя через 45 сек (°C)
-    'runaway_min_heater_rise': 'rH',     # Мин. рост нагревателя (°C/мин)
-    'runaway_min_air_rise': 'rA',        # Мин. рост воздуха (°C/мин)
-    'runaway_max_heater_drop': 'rD',     # Макс. падение нагревателя (°C)
-    'runaway_hysteresis': 'rY',          # Гистерезис срабатывания (°C)
-    'runaway_recovery_timeout': 'rR',    # Таймаут восстановления (сек)
-    'runaway_fan_on': 'rF',              # Включить вентилятор при срабатывании (bool)
+    # ========== THERMAL RUNAWAY (FOUR-PHASE PROTECTION) ==========
+    'enable_thermal_runaway': 'tR',      # Enable protection (bool)
+    'runaway_phase1_time': 'r1',         # Phase 1 duration (min)
+    'runaway_phase2_time': 'r2',         # Phase 2 duration (min)
+    'runaway_max_time_to_target': 'rT',  # Max. time to target (min)
+    'runaway_quick_check_temp': 'rQC',   # Phase 0: min. heater temperature after 45 sec (°C)
+    'runaway_min_heater_rise': 'rH',     # Min. heater rise (°C/min)
+    'runaway_min_air_rise': 'rA',        # Min. air rise (°C/min)
+    'runaway_max_heater_drop': 'rD',     # Max. heater drop (°C)
+    'runaway_hysteresis': 'rY',          # Trigger hysteresis (°C)
+    'runaway_recovery_timeout': 'rR',    # Recovery timeout (sec)
+    'runaway_fan_on': 'rF',              # Turn on fan on trigger (bool)
     
-    # ========== UNEXPECTED HEAT (НЕОЖИДАННЫЙ НАГРЕВ) ==========
-    'enable_unexpected_heat': 'uH',      # Включить защиту (bool)
-    'unexpected_heat_timeout': 'uT',     # Таймаут ожидания (сек)
-    'unexpected_heat_threshold': 'uP',   # Порог срабатывания (°C)
-    'min_cooling_rate': 'mC',            # Мин. скорость охлаждения (°C/сек)
-    'unexpected_heat_hysteresis': 'uY',  # Гистерезис сброса (°C)
-    'unexpected_heat_clear_time': 'uC',  # Время автосброса (мс)
-    'unexpected_heat_safe_offset': 'uS', # Безопасный отступ (°C)
-    'enable_unexpected_heat_adaptive': 'uA', # Адаптивный порог (bool)
-    'adaptive_base_temp': 'aB',          # Базовая температура (°C)
-    'adaptive_coefficient': 'aC',        # Коэффициент адаптации
-    'adaptive_min_offset': 'aM',         # Мин. адаптивный отступ (°C)
+    # ========== UNEXPECTED HEAT ==========
+    'enable_unexpected_heat': 'uH',      # Enable protection (bool)
+    'unexpected_heat_timeout': 'uT',     # Wait timeout (sec)
+    'unexpected_heat_threshold': 'uP',   # Trigger threshold (°C)
+    'min_cooling_rate': 'mC',            # Min. cooling rate (°C/sec)
+    'unexpected_heat_hysteresis': 'uY',  # Reset hysteresis (°C)
+    'unexpected_heat_clear_time': 'uC',  # Auto-reset time (ms)
+    'unexpected_heat_safe_offset': 'uS', # Safe offset (°C)
+    'enable_unexpected_heat_adaptive': 'uA', # Adaptive threshold (bool)
+    'adaptive_base_temp': 'aB',          # Base temperature (°C)
+    'adaptive_coefficient': 'aC',        # Adaptation coefficient
+    'adaptive_min_offset': 'aM',         # Min. adaptive offset (°C)
     
-    # ========== КОНТРОЛЬ СКОРОСТИ РОСТА ==========
-    'enable_abnormal_rate': 'eA',        # Включить контроль (bool)
-    'abnormal_rate_threshold': 'aT',     # Порог аномальной скорости (°C/сек)
+    # ========== RATE OF RISE CONTROL ==========
+    'enable_abnormal_rate': 'eA',        # Enable control (bool)
+    'abnormal_rate_threshold': 'aT',     # Abnormal rate threshold (°C/sec)
     
-    # ========== MAX6675 (ТЕРМОПАРА) ==========
-    'max6675_offset': 'mO',              # Калибровочное смещение (°C)
-    'enable_max6675_protection': 'mP',   # Включить защиту датчика (bool)
-    'max6675_stability_samples': 'mS',   # Сэмплов для стабильности
-    'max6675_temp_jump_threshold': 'mJ', # Порог скачка температуры (°C)
-    'max6675_min_temp': 'mN',            # Мин. допустимая температура (°C)
-    'max6675_max_temp': 'mX',            # Макс. допустимая температура (°C)
+    # ========== MAX6675 (THERMOCOUPLE) ==========
+    'max6675_offset': 'mO',              # Calibration offset (°C)
+    'enable_max6675_protection': 'mP',   # Enable sensor protection (bool)
+    'max6675_stability_samples': 'mS',   # Samples for stability
+    'max6675_temp_jump_threshold': 'mJ', # Temperature jump threshold (°C)
+    'max6675_min_temp': 'mN',            # Min. allowable temperature (°C)
+    'max6675_max_temp': 'mX',            # Max. allowable temperature (°C)
     
-    # ========== DS18B20 (ДАТЧИК ВОЗДУХА) ==========
-    'ds18b20_offset': 'dO',              # Калибровочное смещение (°C)
-    'ds18b20_scale': 'dS',               # Масштабирующий коэффициент
-    'ds18b20_cal_enabled': 'dC',         # Включить калибровку (bool)
-    'enable_air_sensor_protection': 'aP',# Включить защиту датчика (bool)
-    'air_sensor_stability_samples': 'aS',# Сэмплов для стабильности
-    'air_sensor_temp_jump_threshold': 'aJ', # Порог скачка (°C)
-    'air_sensor_min_temp': 'aN',         # Мин. температура (°C)
-    'air_sensor_max_temp': 'aX',         # Макс. температура (°C)
-    'air_sensor_unstable_range': 'aU',   # Диапазон нестабильности (°C)
-    'air_sensor_unstable_deviation': 'aV', # Отклонение (°C)
-    'air_sensor_unstable_window': 'aW',  # Окно анализа (измерений)
-    'air_sensor_direction_changes': 'aD',# Смены направления
+    # ========== DS18B20 (AIR SENSOR) ==========
+    'ds18b20_offset': 'dO',              # Calibration offset (°C)
+    'ds18b20_scale': 'dS',               # Scaling coefficient
+    'ds18b20_cal_enabled': 'dC',         # Enable calibration (bool)
+    'enable_air_sensor_protection': 'aP',# Enable sensor protection (bool)
+    'air_sensor_stability_samples': 'aS',# Samples for stability
+    'air_sensor_temp_jump_threshold': 'aJ', # Jump threshold (°C)
+    'air_sensor_min_temp': 'aN',         # Min. temperature (°C)
+    'air_sensor_max_temp': 'aX',         # Max. temperature (°C)
+    'air_sensor_unstable_range': 'aU',   # Instability range (°C)
+    'air_sensor_unstable_deviation': 'aV', # Deviation (°C)
+    'air_sensor_unstable_window': 'aW',  # Analysis window (measurements)
+    'air_sensor_direction_changes': 'aD',# Direction changes
     
-    # ========== ОШИБКИ И БЛОКИРОВКИ ==========
-    'max_error_retries': 'mR',           # Макс. повторов до блокировки
-    'error_window_minutes': 'eW',        # Окно подсчёта ошибок (мин)
-    'min_time_between_same_errors': 'mE',# Мин. время между ошибками (мс)
-    'min_time_between_overheat_counts': 'mOc', # Мин. время между перегревами (мс)
-    'unlock_password': 'uPw',            # Пароль разблокировки
-    'settings_locked': 'sl',             # Блокировка настроек (bool)
+    # ========== ERRORS AND BLOCKING ==========
+    'max_error_retries': 'mR',           # Max. retries before blocking
+    'error_window_minutes': 'eW',        # Error counting window (min)
+    'min_time_between_same_errors': 'mE',# Min. time between errors (ms)
+    'min_time_between_overheat_counts': 'mOc', # Min. time between overheats (ms)
+    'unlock_password': 'uPw',            # Unlock password
+    'settings_locked': 'sl',             # Settings lock (bool)
     
-    # ========== LED ИНДИКАЦИЯ ==========
-    'led_enabled': 'lE',                 # Включить LED (bool)
-    'led_count': 'lC',                   # Количество светодиодов
-    'led_brightness': 'lB',              # Яркость (0-255)
-    'led_pin': 'lP',                     # Пин LED
+    # ========== LED INDICATION ==========
+    'led_enabled': 'lE',                 # Enable LED (bool)
+    'led_count': 'lC',                   # Number of LEDs
+    'led_brightness': 'lB',              # Brightness (0-255)
+    'led_pin': 'lP',                     # LED pin
     
-    # ========== HEARTBEAT (СТОРОЖЕВОЙ ТАЙМЕР) ==========
-    'heartbeat_pulse_ms': 'hP',          # Длительность импульса (мс)
-    'heartbeat_pause_ms': 'hQ',          # Пауза между импульсами (мс)
+    # ========== HEARTBEAT (WATCHDOG TIMER) ==========
+    'heartbeat_pulse_ms': 'hP',          # Pulse duration (ms)
+    'heartbeat_pause_ms': 'hQ',          # Pause between pulses (ms)
     
-    # ========== СИСТЕМНЫЕ ИНТЕРВАЛЫ ==========
-    'read_interval': 'rI',               # Интервал чтения датчиков (мс)
-    'control_interval': 'cI',            # Основной цикл управления (мс)
-    'trend_interval': 'tI',              # Интервал сохранения трендов (мс)
-    'heap_check_interval': 'hI',         # Интервал проверки памяти (мс)
-    'loop_watchdog_timeout': 'lW',       # Таймаут Task Watchdog (мс)
-    'enable_loop_watchdog': 'eL',        # Включить Watchdog (bool)
-    'udp_discovery_timeout': 'uD',       # Таймаут UDP поиска (мс)
-    'discovery_retry_interval': 'dR',    # Интервал повтора UDP (мс)
+    # ========== SYSTEM INTERVALS ==========
+    'read_interval': 'rI',               # Sensor read interval (ms)
+    'control_interval': 'cI',            # Main control loop (ms)
+    'trend_interval': 'tI',              # Trend saving interval (ms)
+    'heap_check_interval': 'hI',         # Memory check interval (ms)
+    'loop_watchdog_timeout': 'lW',       # Task Watchdog timeout (ms)
+    'enable_loop_watchdog': 'eL',        # Enable Watchdog (bool)
+    'udp_discovery_timeout': 'uD',       # UDP discovery timeout (ms)
+    'discovery_retry_interval': 'dR',    # UDP retry interval (ms)
     
-    # ========== АВТООТКЛЮЧЕНИЕ ПО MOONRAKER ==========
-    'auto_shutdown_enabled': 'aSd',      # Включить автоотключение (bool)
-    'auto_shutdown_minutes': 'aSm',      # Минут ожидания после печати
+    # ========== MOONRAKER AUTO-SHUTDOWN ==========
+    'auto_shutdown_enabled': 'aSd',      # Enable auto-shutdown (bool)
+    'auto_shutdown_minutes': 'aSm',      # Minutes to wait after printing
     
-    # ========== ТЕРМАЛЬНАЯ МОДЕЛЬ ==========
-    'enable_thermal_model': 'tM',        # Включить модель (bool)
-    'thermal_model_sensitivity': 'tS',   # Чувствительность (0.5-3.0)
-    'thermal_model_check_interval': 'tC',# Интервал проверки (мс)
-    'thermal_model_log_warnings': 'tL',  # Логировать предупреждения (bool)
+    # ========== THERMAL MODEL ==========
+    'enable_thermal_model': 'tM',        # Enable model (bool)
+    'thermal_model_sensitivity': 'tS',   # Sensitivity (0.5-3.0)
+    'thermal_model_check_interval': 'tC',# Check interval (ms)
+    'thermal_model_log_warnings': 'tL',  # Log warnings (bool)
     
-    # ========== АППАРАТНЫЕ ПИНЫ ==========
-    'pin_ssr': 'pS',                     # Пин SSR (нагреватель)
-    'pin_fan': 'pF',                     # Пин вентилятора (ШИМ)
-    'pin_watchdog': 'pW',                # Пин Watchdog (heartbeat)
-    'pin_onewire': 'pO',                 # Пин OneWire (DS18B20)
-    'pin_max_sck': 'pK',                 # Пин MAX6675 SCK
-    'pin_max_so': 'pM',                  # Пин MAX6675 SO
-    'pin_max_cs': 'pC',                  # Пин MAX6675 CS
-    'pin_buzzer': 'pB',                  # Пин зуммера
-    'pin_led': 'pL',                     # Пин LED
+    # ========== HARDWARE PINS ==========
+    'pin_ssr': 'pS',                     # SSR pin (heater)
+    'pin_fan': 'pF',                     # Fan pin (PWM)
+    'pin_watchdog': 'pW',                # Watchdog pin (heartbeat)
+    'pin_onewire': 'pO',                 # OneWire pin (DS18B20)
+    'pin_max_sck': 'pK',                 # MAX6675 SCK pin
+    'pin_max_so': 'pM',                  # MAX6675 SO pin
+    'pin_max_cs': 'pC',                  # MAX6675 CS pin
+    'pin_buzzer': 'pB',                  # Buzzer pin
+    'pin_led': 'pL',                     # LED pin
     
-    # ========== ИНТЕРВАЛЫ УПРАВЛЕНИЯ ==========
-    'heater_control_interval': 'hC',     # Интервал управления нагревателем (мс)
-    'fan_control_interval': 'fC',        # Интервал управления вентилятором (мс)
-    'runaway_check_interval': 'rC',      # Интервал проверки Runaway (мс)
-    'unexpected_check_interval': 'uCc',  # Интервал проверки Unexpected Heat (мс)
-    'rate_check_interval': 'rAc',        # Интервал проверки скорости роста (мс)
+    # ========== CONTROL INTERVALS ==========
+    'heater_control_interval': 'hC',     # Heater control interval (ms)
+    'fan_control_interval': 'fC',        # Fan control interval (ms)
+    'runaway_check_interval': 'rC',      # Runaway check interval (ms)
+    'unexpected_check_interval': 'uCc',  # Unexpected Heat check interval (ms)
+    'rate_check_interval': 'rAc',        # Rate of rise check interval (ms)
     
-    # ========== АВТООГРАНИЧЕНИЕ ВЕНТИЛЯТОРА ==========
-    'enable_fan_auto_limit': 'eFAL',     # Включить автоограничение (bool)
-    'fan_auto_limit_hysteresis': 'fALH', # Гистерезис автоограничения (°C)
-    'fan_auto_limit_adjust_step': 'fALA',# Шаг изменения duty
-    'fan_auto_limit_min_duty': 'fALM',   # Минимальный duty
-    'fan_auto_limit_check_interval': 'fALI', # Интервал проверки (мс)
-    'fan_auto_limit_stable_count': 'fALS',# Замеров для стабилизации
-    'fan_auto_limit_adapted': 'fALAd',   # Флаг адаптации автоограничения (bool)
+    # ========== FAN AUTO-LIMIT ==========
+    'enable_fan_auto_limit': 'eFAL',     # Enable auto-limit (bool)
+    'fan_auto_limit_hysteresis': 'fALH', # Auto-limit hysteresis (°C)
+    'fan_auto_limit_adjust_step': 'fALA',# Duty adjustment step
+    'fan_auto_limit_min_duty': 'fALM',   # Minimum duty
+    'fan_auto_limit_check_interval': 'fALI', # Check interval (ms)
+    'fan_auto_limit_stable_count': 'fALS',# Measurements for stabilization
+    'fan_auto_limit_adapted': 'fALAd',   # Auto-limit adaptation flag (bool)
     
-    # ========== ЗУММЕР ==========
-    'buzzer_enabled': 'bE',              # Включить зуммер (bool)
-    'buzzer_non_critical_enabled': 'bN', # Сигнал на некритичные ошибки (bool)
-    'buzzer_melody': 'bM',               # Мелодия (0=короткий, 1=двойной, 2=тревога)
+    # ========== BUZZER ==========
+    'buzzer_enabled': 'bE',              # Enable buzzer (bool)
+    'buzzer_non_critical_enabled': 'bN', # Signal on non-critical errors (bool)
+    'buzzer_melody': 'bM',               # Melody (0=short, 1=double, 2=alarm)
 }
 
 # ============================================================================
-# ОСНОВНОЙ КЛАСС СЕНСОРА
+# MAIN SENSOR CLASS
 # ============================================================================
 
 class FLOOK32Sensor:
     """
-    Сенсор температуры камеры 3D-принтера, интегрированный с контроллером FLOOK32.
+    3D printer chamber temperature sensor integrated with the FLOOK32 controller.
     
-    Класс реализует интерфейс сенсора Klipper и обеспечивает:
-      - Автоматическое обнаружение FLOOK32 в локальной сети через UDP broadcast
-      - Чтение температуры воздуха в реальном времени (WebSocket или HTTP)
-      - Управление нагревом через G-код команды (17 команд)
-      - Мониторинг ошибок FLOOK32 с выводом в консоль Klipper
-      - Отправку пользовательской конфигурации на устройство
+    The class implements the Klipper sensor interface and provides:
+      - Automatic discovery of FLOOK32 on the local network via UDP broadcast
+      - Real-time air temperature reading (WebSocket or HTTP)
+      - Heating control via G-code commands (17 commands)
+      - FLOOK32 error monitoring with output to the Klipper console
+      - Sending user configuration to the device
     
-    Режимы подключения:
-      1. РУЧНОЙ (flook_ip задан) — прямое подключение по указанному IP
-      2. АВТОМАТИЧЕСКИЙ (auto_discover=True) — поиск через UDP broadcast
+    Connection modes:
+      1. MANUAL (flook_ip set) — direct connection to the specified IP
+      2. AUTOMATIC (auto_discover=True) — discovery via UDP broadcast
     
-    Передача данных (в порядке приоритета):
-      1. WebSocket — real-time обновления (если установлен websocket-client)
-      2. HTTP polling — периодические запросы (интервал: report_interval)
+    Data transmission (in priority order):
+      1. WebSocket — real-time updates (if websocket-client is installed)
+      2. HTTP polling — periodic requests (interval: report_interval)
     """
     
     def __init__(self, config):
         """
-        Инициализация сенсора при загрузке плагина Klipper.
+        Sensor initialization when the Klipper plugin loads.
         
-        Параметры:
-          config — объект конфигурации Klipper, содержащий все настройки из printer.cfg
+        Parameters:
+          config — Klipper configuration object containing all settings from printer.cfg
         
-        Порядок инициализации:
-          1. Загрузка базовых параметров подключения (IP, порт, режим)
-          2. Загрузка ВСЕХ параметров конфигурации (температуры, защиты, пины, ...)
-          3. Определение явно заданных параметров (для отправки на устройство)
-          4. Инициализация переменных состояния (температуры, флаги, счётчики)
-          5. Загрузка сохранённого ID устройства
-          6. Регистрация G-код команд
-          7. Запуск фоновых потоков (UDP-слушатель, цикл опроса)
+        Initialization order:
+          1. Load basic connection parameters (IP, port, mode)
+          2. Load ALL configuration parameters (temperatures, protections, pins, ...)
+          3. Determine explicitly specified parameters (for sending to the device)
+          4. Initialize state variables (temperatures, flags, counters)
+          5. Load saved device ID
+          6. Register G-code commands
+          7. Start background threads (UDP listener, polling loop)
         """
         
         # =====================================================================
-        # БАЗОВАЯ ИНИЦИАЛИЗАЦИЯ
+        # BASIC INITIALIZATION
         # =====================================================================
         
-        # Объект принтера Klipper — точка входа во всю систему
+        # Klipper printer object — entry point to the entire system
         self.printer = config.get_printer()
-        # Реактор — планировщик задач Klipper (используется для таймеров)
+        # Reactor — Klipper task scheduler (used for timers)
         self.reactor = self.printer.get_reactor()
-        # Имя датчика — последняя часть имени секции (например, "chamber")
+        # Sensor name — the last part of the section name (e.g., "chamber")
         self.name = config.get_name().split()[-1]
         
         logging.info("=" * 60)
-        logging.info("FLOOK32 датчик '{}' инициализация (режим: air)".format(self.name))
+        logging.info("FLOOK32 sensor '{}' initialization (mode: air)".format(self.name))
         logging.info("=" * 60)
         
         # =====================================================================
-        # ПАРАМЕТРЫ ПОДКЛЮЧЕНИЯ
+        # CONNECTION PARAMETERS
         # =====================================================================
         
-        # IP адрес FLOOK32 в локальной сети
-        # Если не задан — будет использоваться автообнаружение через UDP
+        # IP address of FLOOK32 on the local network
+        # If not set — auto-discovery via UDP will be used
         self.flook_ip = config.get('flook_ip', None)
-        # HTTP/WebSocket порт (по умолчанию 80)
+        # HTTP/WebSocket port (default 80)
         self.flook_port = config.getint('flook_port', 80)
         
-        # Определяем режим подключения
+        # Determine connection mode
         if self.flook_ip:
-            # РУЧНОЙ РЕЖИМ: IP указан явно, автообнаружение не требуется
+            # MANUAL MODE: IP specified explicitly, auto-discovery not required
             self.auto_discover = False
-            logging.info("Ручной режим, IP={}:{}".format(self.flook_ip, self.flook_port))
+            logging.info("Manual mode, IP={}:{}".format(self.flook_ip, self.flook_port))
         else:
-            # АВТОМАТИЧЕСКИЙ РЕЖИМ: IP не задан, ищем через UDP
+            # AUTOMATIC MODE: IP not set, searching via UDP
             self.auto_discover = config.getboolean('auto_discover', True)
-            logging.info("Автоматический режим, авто-поиск={}".format(
-                'включен' if self.auto_discover else 'выключен'))
+            logging.info("Automatic mode, auto-discovery={}".format(
+                'enabled' if self.auto_discover else 'disabled'))
         
         # =====================================================================
-        # ПАРАМЕТРЫ ОПРОСА И УВЕДОМЛЕНИЙ
+        # POLLING AND NOTIFICATION PARAMETERS
         # =====================================================================
         
-        # Тихий режим — отключает ВСЕ сообщения в консоль Klipper
-        # (логирование в файл продолжается независимо от этого параметра)
+        # Silent mode — disables ALL messages in the Klipper console
+        # (logging to file continues regardless of this parameter)
         self.silent_mode = config.getboolean('silent', False)
         if self.silent_mode:
-            logging.info("Тихий режим включен")
+            logging.info("Silent mode enabled")
         
-        # Интервал HTTP-опроса (используется ТОЛЬКО когда WebSocket недоступен)
-        # Диапазон: 5-60 секунд, по умолчанию 10 секунд
+        # HTTP polling interval (used ONLY when WebSocket is unavailable)
+        # Range: 5-60 seconds, default 10 seconds
         self.report_interval = config.getfloat('report_interval', 10.0, minval=5.0, maxval=60.0)
-        logging.info("Интервал отчета = {} сек".format(self.report_interval))
+        logging.info("Report interval = {} sec".format(self.report_interval))
         
         # =====================================================================
-        # НАСТРОЙКИ АВТОУВЕДОМЛЕНИЙ ОБ ОШИБКАХ
+        # ERROR AUTO-NOTIFICATION SETTINGS
         # =====================================================================
         
-        # Включить/выключить мониторинг ошибок FLOOK32
+        # Enable/disable FLOOK32 error monitoring
         self.enable_error_notifications = config.getboolean('enable_error_notifications', True)
-        # Максимальный возраст ошибки для вывода (сек). 0 = без ограничений
+        # Maximum error age for output (sec). 0 = no limit
         self.error_notification_max_age = config.getint('error_notification_max_age', 600, minval=0, maxval=86400)
-        # Периодичность проверки API ошибок (сек)
+        # Error API check frequency (sec)
         self.error_check_interval = config.getint('error_check_interval', 30, minval=15, maxval=120)
-        # Показывать тренды температур перед ошибкой
+        # Show temperature trends before the error
         self.show_trends = config.getboolean('show_trends', True)
-        # Максимальное количество строк трендов (0 = все)
+        # Maximum number of trend lines (0 = all)
         self.max_trend_lines = config.getint('max_trend_lines', 30, minval=0, maxval=100)
         
         if self.enable_error_notifications:
-            logging.info("Автоуведомления об ошибках: ВКЛЮЧЕНЫ")
+            logging.info("Error auto-notifications: ENABLED")
         else:
-            logging.info("Автоуведомления об ошибках: ОТКЛЮЧЕНЫ")
+            logging.info("Error auto-notifications: DISABLED")
         
         # =====================================================================
-        # ЗАГРУЗКА ВСЕХ ПАРАМЕТРОВ КОНФИГУРАЦИИ
+        # LOADING ALL CONFIGURATION PARAMETERS
         # =====================================================================
-        # Каждый параметр имеет значение по умолчанию, диапазон допустимых значений
-        # и подробное описание в printer.cfg.
-        # Здесь они загружаются в атрибуты объекта для использования в методах.
+        # Each parameter has a default value, valid range
+        # and detailed description in printer.cfg.
+        # Here they are loaded into object attributes for use in methods.
         
-        # --- ПАРАМЕТРЫ НАГРЕВАТЕЛЯ ---
+        # --- HEATER PARAMETERS ---
         self.max_heater_temp = config.getfloat('max_heater_temp', 100.0, minval=30, maxval=300)
         self.critical_temp = config.getfloat('critical_temp', 110.0, minval=40, maxval=350)
         self.critical_hysteresis = config.getfloat('critical_hysteresis', 5.0, minval=0.1, maxval=50)
@@ -500,7 +500,7 @@ class FLOOK32Sensor:
         self.invert_heater_signal = config.getboolean('invert_heater_signal', False)
         self.max_fan_duty = config.getint('max_fan_duty', 1023, minval=0, maxval=1023)
         
-        # --- ПАРАМЕТРЫ ВЕНТИЛЯТОРА ---
+        # --- FAN PARAMETERS ---
         self.fan_on_temp = config.getfloat('fan_on_temp', 55.0, minval=0, maxval=120)
         self.fan_off_hysteresis = config.getfloat('fan_off_hysteresis', 3.0, minval=1, maxval=30)
         self.fan_min_on_time = config.getint('fan_min_on_time', 30, minval=10, maxval=300)
@@ -515,7 +515,7 @@ class FLOOK32Sensor:
         self.fan_auto_limit_check_interval = config.getint('fan_auto_limit_check_interval', 5000, minval=1000, maxval=30000)
         self.fan_auto_limit_stable_count = config.getint('fan_auto_limit_stable_count', 3, minval=1, maxval=10)
         
-        # --- THERMAL RUNAWAY (ЧЕТЫРЁХФАЗНАЯ ЗАЩИТА) ---
+        # --- THERMAL RUNAWAY (FOUR-PHASE PROTECTION) ---
         self.enable_thermal_runaway = config.getboolean('enable_thermal_runaway', True)
         self.runaway_phase1_time = config.getint('runaway_phase1_time', 5, minval=1, maxval=30)
         self.runaway_phase2_time = config.getint('runaway_phase2_time', 15, minval=5, maxval=60)
@@ -528,7 +528,7 @@ class FLOOK32Sensor:
         self.runaway_fan_on = config.getboolean('runaway_fan_on', False)
         self.runaway_quick_check_temp = config.getfloat('runaway_quick_check_temp', 60.0, minval=20, maxval=200)
         
-        # --- UNEXPECTED HEAT (НЕОЖИДАННЫЙ НАГРЕВ) ---
+        # --- UNEXPECTED HEAT ---
         self.enable_unexpected_heat = config.getboolean('enable_unexpected_heat', True)
         self.unexpected_heat_timeout = config.getfloat('unexpected_heat_timeout', 45.0, minval=5, maxval=300)
         self.unexpected_heat_threshold = config.getfloat('unexpected_heat_threshold', 15.0, minval=5, maxval=50)
@@ -541,11 +541,11 @@ class FLOOK32Sensor:
         self.adaptive_coefficient = config.getfloat('adaptive_coefficient', 0.3, minval=0, maxval=1)
         self.adaptive_min_offset = config.getfloat('adaptive_min_offset', 30.0, minval=10, maxval=100)
         
-        # --- КОНТРОЛЬ АНОМАЛЬНОЙ СКОРОСТИ РОСТА ---
+        # --- ABNORMAL RATE OF RISE CONTROL ---
         self.enable_abnormal_rate = config.getboolean('enable_abnormal_rate', True)
         self.abnormal_rate_threshold = config.getfloat('abnormal_rate_threshold', 5.0, minval=0.5, maxval=50)
         
-        # --- MAX6675 (ТЕРМОПАРА) ---
+        # --- MAX6675 (THERMOCOUPLE) ---
         self.max6675_offset = config.getfloat('max6675_offset', 0.0, minval=-50, maxval=50)
         self.enable_max6675_protection = config.getboolean('enable_max6675_protection', True)
         self.max6675_stability_samples = config.getint('max6675_stability_samples', 3, minval=1, maxval=10)
@@ -553,7 +553,7 @@ class FLOOK32Sensor:
         self.max6675_min_temp = config.getfloat('max6675_min_temp', -50.0, minval=-100, maxval=0)
         self.max6675_max_temp = config.getfloat('max6675_max_temp', 400.0, minval=100, maxval=1000)
         
-        # --- DS18B20 (ДАТЧИК ВОЗДУХА) ---
+        # --- DS18B20 (AIR SENSOR) ---
         self.ds18b20_offset = config.getfloat('ds18b20_offset', 0.0, minval=-10, maxval=10)
         self.ds18b20_scale = config.getfloat('ds18b20_scale', 1.0, minval=0.9, maxval=1.1)
         self.ds18b20_cal_enabled = config.getboolean('ds18b20_cal_enabled', False)
@@ -567,7 +567,7 @@ class FLOOK32Sensor:
         self.air_sensor_unstable_window = config.getint('air_sensor_unstable_window', 10, minval=3, maxval=50)
         self.air_sensor_direction_changes = config.getint('air_sensor_direction_changes', 3, minval=1, maxval=20)
         
-        # --- СИСТЕМА ОШИБОК И БЛОКИРОВОК ---
+        # --- ERROR AND BLOCKING SYSTEM ---
         self.max_error_retries = config.getint('max_error_retries', 3, minval=1, maxval=20)
         self.error_window_minutes = config.getint('error_window_minutes', 10, minval=1, maxval=240)
         self.min_time_between_same_errors = config.getint('min_time_between_same_errors', 30000, minval=1000, maxval=300000)
@@ -575,17 +575,17 @@ class FLOOK32Sensor:
         self.unlock_password = config.get('unlock_password', 'unlock')
         self.settings_locked = config.getboolean('settings_locked', True)
         
-        # --- LED ИНДИКАЦИЯ ---
+        # --- LED INDICATION ---
         self.led_enabled = config.getboolean('led_enabled', True)
         self.led_count = config.getint('led_count', 3, minval=1, maxval=100)
         self.led_brightness = config.getint('led_brightness', 50, minval=0, maxval=255)
         self.led_pin = config.getint('led_pin', 27, minval=0, maxval=39)
         
-        # --- HEARTBEAT (СТОРОЖЕВОЙ ТАЙМЕР) ---
+        # --- HEARTBEAT (WATCHDOG TIMER) ---
         self.heartbeat_pulse_ms = config.getint('heartbeat_pulse_ms', 100, minval=10, maxval=1000)
         self.heartbeat_pause_ms = config.getint('heartbeat_pause_ms', 900, minval=100, maxval=10000)
         
-        # --- СИСТЕМНЫЕ ИНТЕРВАЛЫ ---
+        # --- SYSTEM INTERVALS ---
         self.read_interval = config.getint('read_interval', 1000, minval=100, maxval=5000)
         self.control_interval = config.getint('control_interval', 3000, minval=1000, maxval=30000)
         self.trend_interval = config.getint('trend_interval', 5000, minval=500, maxval=10000)
@@ -595,17 +595,17 @@ class FLOOK32Sensor:
         self.udp_discovery_timeout = config.getint('udp_discovery_timeout', 30000, minval=5000, maxval=60000)
         self.discovery_retry_interval = config.getint('discovery_retry_interval', 1000, minval=500, maxval=10000)
         
-        # --- АВТООТКЛЮЧЕНИЕ ПО MOONRAKER ---
+        # --- MOONRAKER AUTO-SHUTDOWN ---
         self.auto_shutdown_enabled = config.getboolean('auto_shutdown_enabled', False)
         self.auto_shutdown_minutes = config.getint('auto_shutdown_minutes', 30, minval=5, maxval=120)
         
-        # --- ТЕРМАЛЬНАЯ МОДЕЛЬ ---
+        # --- THERMAL MODEL ---
         self.enable_thermal_model = config.getboolean('enable_thermal_model', False)
         self.thermal_model_sensitivity = config.getfloat('thermal_model_sensitivity', 1.0, minval=0.5, maxval=3.0)
         self.thermal_model_check_interval = config.getint('thermal_model_check_interval', 2000, minval=500, maxval=10000)
         self.thermal_model_log_warnings = config.getboolean('thermal_model_log_warnings', True)
         
-        # --- АППАРАТНЫЕ ПИНЫ ---
+        # --- HARDWARE PINS ---
         self.pin_ssr = config.getint('pin_ssr', 32, minval=0, maxval=39)
         self.pin_fan = config.getint('pin_fan', 33, minval=0, maxval=39)
         self.pin_watchdog = config.getint('pin_watchdog', 26, minval=0, maxval=39)
@@ -616,23 +616,23 @@ class FLOOK32Sensor:
         self.pin_buzzer = config.getint('pin_buzzer', 25, minval=0, maxval=39)
         self.pin_led = config.getint('pin_led', 27, minval=0, maxval=39)
         
-        # --- ДОПОЛНИТЕЛЬНЫЕ ИНТЕРВАЛЫ УПРАВЛЕНИЯ ---
+        # --- ADDITIONAL CONTROL INTERVALS ---
         self.heater_control_interval = config.getint('heater_control_interval', 200, minval=50, maxval=1000)
         self.fan_control_interval = config.getint('fan_control_interval', 1000, minval=500, maxval=5000)
         self.runaway_check_interval = config.getint('runaway_check_interval', 5000, minval=1000, maxval=30000)
         self.unexpected_check_interval = config.getint('unexpected_check_interval', 2000, minval=500, maxval=10000)
         self.rate_check_interval = config.getint('rate_check_interval', 1000, minval=500, maxval=5000)
         
-        # --- ЗУММЕР ---
+        # --- BUZZER ---
         self.buzzer_enabled = config.getboolean('buzzer_enabled', True)
         self.buzzer_non_critical_enabled = config.getboolean('buzzer_non_critical_enabled', False)
         self.buzzer_melody = config.getint('buzzer_melody', 1, minval=0, maxval=2)
         
         # =====================================================================
-        # ОПРЕДЕЛЕНИЕ ЯВНО ЗАДАННЫХ ПАРАМЕТРОВ
+        # DETERMINING EXPLICITLY SPECIFIED PARAMETERS
         # =====================================================================
-        # Параметры, НЕ входящие в этот список, считаются "явно заданными"
-        # и будут отправлены на FLOOK32 при первом подключении.
+        # Parameters NOT in this list are considered "explicitly specified"
+        # and will be sent to FLOOK32 on first connection.
         connection_params = ['flook_ip', 'flook_port', 'auto_discover', 'sensor_type', 
                            'sensor_mode', 'min_temp', 'max_temp', 'report_interval',
                            'enable_error_notifications', 'error_notification_max_age', 
@@ -646,7 +646,7 @@ class FLOOK32Sensor:
                     value = config.get(param, None)
                     self._explicit_params[param] = value
         else:
-            # Fallback если get_prefix_options недоступен
+            # Fallback if get_prefix_options is unavailable
             known_params = ['max_heater_temp', 'critical_temp', 'fan_on_temp', 
                           'auto_shutdown_enabled', 'auto_shutdown_minutes']
             for param in known_params:
@@ -660,139 +660,139 @@ class FLOOK32Sensor:
         self._has_custom_config = len(self._explicit_params) > 0
         
         # =====================================================================
-        # ПЕРЕМЕННЫЕ СОСТОЯНИЯ (ДАННЫЕ, ПОЛУЧАЕМЫЕ С FLOOK32)
+        # STATE VARIABLES (DATA RECEIVED FROM FLOOK32)
         # =====================================================================
-        self.air_temp = 25.0               # Температура воздуха (DS18B20)
-        self.heater_temp = 25.0            # Температура нагревателя (MAX6675)
-        self.target_temp = 0.0             # Целевая температура
-        self.heater_state = False          # Состояние нагревателя (вкл/выкл)
-        self.fan_state = False             # Состояние вентилятора
-        self.fan_duty = 0                  # Мощность вентилятора (0-1023)
-        self.system_locked = False         # Флаг блокировки системы
-        self.lock_message = ""             # Сообщение о причине блокировки
-        self.uptime = 0                    # Время работы устройства (сек)
-        self.error_count = 0               # Количество ошибок в журнале
-        self.klipper_detected = False      # Klipper обнаружен?
-        self.klipper_ip = ""               # IP Klipper
-        self.thermal_confidence = 0        # Уверенность термальной модели (%)
-        self.thermal_heater_rate = 0       # Скорость нагрева (°C/мин)
-        self.thermal_cooling_rate = 0      # Скорость охлаждения (°C/сек)
-        self.device_id = None              # ID устройства (из /api/all)
+        self.air_temp = 25.0               # Air temperature (DS18B20)
+        self.heater_temp = 25.0            # Heater temperature (MAX6675)
+        self.target_temp = 0.0             # Target temperature
+        self.heater_state = False          # Heater state (on/off)
+        self.fan_state = False             # Fan state
+        self.fan_duty = 0                  # Fan power (0-1023)
+        self.system_locked = False         # System lock flag
+        self.lock_message = ""             # Lock reason message
+        self.uptime = 0                    # Device uptime (sec)
+        self.error_count = 0               # Number of errors in the log
+        self.klipper_detected = False      # Klipper detected?
+        self.klipper_ip = ""               # Klipper IP
+        self.thermal_confidence = 0        # Thermal model confidence (%)
+        self.thermal_heater_rate = 0       # Heating rate (°C/min)
+        self.thermal_cooling_rate = 0      # Cooling rate (°C/sec)
+        self.device_id = None              # Device ID (from /api/all)
         
-        # Температурные пределы для сенсора Klipper
+        # Temperature limits for the Klipper sensor
         self.min_temp = MIN_TEMP          # -100°C
         self.max_temp = MAX_TEMP          # 200°C
         
-        # Счётчики ошибок HTTP-соединения
-        self._http_errors = 0             # Текущее количество ошибок подряд
-        self._max_http_errors = 5         # Порог для объявления потери связи
-        self.connection_lost_time = 0     # Время потери связи (0 = связь есть)
+        # HTTP connection error counters
+        self._http_errors = 0             # Current number of consecutive errors
+        self._max_http_errors = 5         # Threshold for declaring connection loss
+        self.connection_lost_time = 0     # Connection loss time (0 = connected)
         
-        # Переменные для автоуведомлений об ошибках
-        self._last_error_check_time = 0   # Время последней проверки ошибок
-        self._last_critical_ts = 0        # Timestamp последней обработанной критической ошибки
-        self._connected_before = False    # Было ли подключение ранее
-        self._device_found_after_reset = False  # Устройство найдено после сброса?
+        # Variables for error auto-notifications
+        self._last_error_check_time = 0   # Last error check time
+        self._last_critical_ts = 0        # Timestamp of last processed critical error
+        self._connected_before = False    # Was there a connection before
+        self._device_found_after_reset = False  # Device found after reset?
         
-        # Переменные для отправки конфигурации
-        self._config_sending = False      # Флаг: конфигурация отправляется прямо сейчас
-        self._config_sent_message = False # Сообщение об отправке уже выведено?
-        self._queue_lock = threading.Lock()  # Блокировка для очереди отправки
-        self.config_sent = False          # Конфигурация успешно отправлена?
-        self.config_apply_attempts = 0    # Количество попыток отправки
-        self.max_config_attempts = 3      # Максимальное количество попыток
+        # Variables for sending configuration
+        self._config_sending = False      # Flag: configuration is being sent right now
+        self._config_sent_message = False # Has the sending message already been output?
+        self._queue_lock = threading.Lock()  # Lock for the sending queue
+        self.config_sent = False          # Configuration successfully sent?
+        self.config_apply_attempts = 0    # Number of sending attempts
+        self.max_config_attempts = 3      # Maximum number of attempts
         
         # =====================================================================
-        # РЕЖИМ РАБОТЫ И ID УСТРОЙСТВА
+        # OPERATING MODE AND DEVICE ID
         # =====================================================================
         
-        # Ручной режим: IP указан явно, автообнаружение не используется
+        # Manual mode: IP specified explicitly, auto-discovery not used
         self.manual_mode = self.flook_ip is not None
-        # Способ хранения ID: "moonraker", "file", или None
+        # ID storage method: "moonraker", "file", or None
         self._storage_method = None
-        # Кэш URL Moonraker API
+        # Moonraker API URL cache
         self._moonraker_url_cache = None
-        # Устройство выбрано (для авторежима)
+        # Device selected (for auto mode)
         self.device_selected = False
         
-        # Флаги для предотвращения повторных предупреждений
-        self._wrong_id_warning_shown = False    # Предупреждение о несовпадении ID
-        self._no_device_warning_shown = False   # Предупреждение об отсутствии устройств
-        self._no_id_warning_shown = False       # Предупреждение об отсутствии сохранённого ID
+        # Flags to prevent repeated warnings
+        self._wrong_id_warning_shown = False    # ID mismatch warning
+        self._no_device_warning_shown = False   # No devices warning
+        self._no_id_warning_shown = False       # No saved ID warning
         
         if not self.manual_mode:
-            # Загружаем сохранённый ID устройства (если есть)
+            # Load saved device ID (if any)
             self.saved_device_id = self._load_device_id()
             if self.saved_device_id:
-                logging.info("Загружен ID устройства: {}".format(self.saved_device_id))
+                logging.info("Loaded device ID: {}".format(self.saved_device_id))
         else:
-            # В ручном режиме ID не нужен
+            # In manual mode, ID is not needed
             self.saved_device_id = None
         
         # =====================================================================
-        # WEBSOCKET (ОПЦИОНАЛЬНО, ДЛЯ REAL-TIME ОБНОВЛЕНИЙ)
+        # WEBSOCKET (OPTIONAL, FOR REAL-TIME UPDATES)
         # =====================================================================
-        self.ws = None                     # Объект WebSocket
-        self.ws_thread = None              # Поток WebSocket
-        self.ws_running = False            # Флаг работы WebSocket
-        self.ws_connected = False          # Флаг подключения
-        self.ws_reconnect_delay = 10       # Задержка перед переподключением (сек)
-        self._ws_error_reported = False    # Ошибка WebSocket уже выведена?
+        self.ws = None                     # WebSocket object
+        self.ws_thread = None              # WebSocket thread
+        self.ws_running = False            # WebSocket running flag
+        self.ws_connected = False          # Connection flag
+        self.ws_reconnect_delay = 10       # Reconnect delay (sec)
+        self._ws_error_reported = False    # Has WebSocket error already been output?
         
         # =====================================================================
-        # UDP ОБНАРУЖЕНИЕ
+        # UDP DISCOVERY
         # =====================================================================
-        self.udp_running = False           # Флаг работы UDP-слушателя
-        self.udp_thread = None             # Поток UDP-слушателя
+        self.udp_running = False           # UDP listener running flag
+        self.udp_thread = None             # UDP listener thread
         
         # =====================================================================
-        # РЕГИСТРАЦИЯ В KLIPPER
+        # REGISTRATION IN KLIPPER
         # =====================================================================
         
-        # Регистрируем датчик в Klipper как temperature_sensor
+        # Register the sensor in Klipper as temperature_sensor
         self.printer.add_object("temperature_sensor " + self.name, self)
         
-        # Блокировка для потокобезопасного доступа к температуре
+        # Lock for thread-safe temperature access
         self.temp_lock = threading.Lock()
-        # Флаг остановки всех потоков (вызывается при завершении Klipper)
+        # Flag to stop all threads (called on Klipper shutdown)
         self.stop_thread = False
-        # Очередь отложенных уведомлений (до инициализации gcode)
+        # Queue of deferred notifications (before gcode initialization)
         self._pending_notifications = []
         
-        # Получаем объект G-кода для регистрации команд
+        # Get the G-code object for registering commands
         self.gcode = self.printer.lookup_object('gcode')
-        # Регистрируем 17 G-код команд
+        # Register 17 G-code commands
         self._safe_register_commands()
         
         # =====================================================================
-        # ЗАПУСК ФОНОВЫХ ПОТОКОВ
+        # STARTING BACKGROUND THREADS
         # =====================================================================
         
-        # Основной цикл опроса датчика (WebSocket или HTTP)
+        # Main sensor polling loop (WebSocket or HTTP)
         self.sensor_thread = threading.Thread(target=self._sensor_loop)
         self.sensor_thread.daemon = True
         self.sensor_thread.start()
         
-        # UDP-слушатель для автообнаружения (только в автоматическом режиме)
+        # UDP listener for auto-discovery (only in automatic mode)
         if not self.manual_mode and self.auto_discover and not self.flook_ip:
             self.udp_running = True
             self.udp_thread = threading.Thread(target=self._udp_discovery_loop)
             self.udp_thread.daemon = True
             self.udp_thread.start()
-            logging.info("UDP обнаружение запущено")
+            logging.info("UDP discovery started")
         
-        # Отправляем накопленные уведомления (если были)
+        # Send accumulated notifications (if any)
         self._flush_pending_notifications()
         
-        logging.info("FLOOK32 датчик '{}' инициализирован (режим: air)".format(self.name))
+        logging.info("FLOOK32 sensor '{}' initialized (mode: air)".format(self.name))
         logging.info("=" * 60)
     
     def _safe_register_commands(self):
         """
-        Безопасная регистрация G-код команд.
+        Safe registration of G-code commands.
         
-        Использует try/except для каждой команды, чтобы избежать
-        ошибок при повторной регистрации (если в конфиге несколько датчиков).
+        Uses try/except for each command to avoid
+        errors on re-registration (if multiple sensors are in the config).
         """
         commands = [
             ('FLOOK_STATUS', self.cmd_FLOOK_STATUS),
@@ -818,18 +818,18 @@ class FLOOK32Sensor:
             try:
                 self.gcode.register_command(cmd_name, handler)
             except:
-                pass  # Команда уже зарегистрирована другим экземпляром
+                pass  # Command already registered by another instance
     
     # =====================================================================
-    # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
+    # HELPER METHODS
     # =====================================================================
     
     def _normalize_id(self, device_id):
         """
-        Нормализует ID устройства: переводит в верхний регистр
-        и дополняет нулями слева до 8 символов (формат hex).
+        Normalizes the device ID: converts to uppercase
+        and pads with zeros on the left to 8 characters (hex format).
         
-        Пример: "1a2b" → "00001A2B"
+        Example: "1a2b" → "00001A2B"
         """
         if not device_id:
             return None
@@ -838,25 +838,25 @@ class FLOOK32Sensor:
     
     def _send_notification(self, message, is_error=False):
         """
-        Отправляет уведомление в консоль Klipper и опционально в Moonraker.
+        Sends a notification to the Klipper console and optionally to Moonraker.
         
-        Параметры:
-          message  — текст сообщения
-          is_error — True для ошибок (префикс "!! "), False для инфо ("// ")
+        Parameters:
+          message  — message text
+          is_error — True for errors (prefix "!! "), False for info ("// ")
         """
         if is_error:
             logging.error("FLOOK32: {}".format(message))
         else:
             logging.info("FLOOK32: {}".format(message))
         
-        # В тихом режиме не выводим сообщения в консоль
+        # In silent mode, do not output messages to the console
         if self.silent_mode:
             return
         
         prefix = "!! " if is_error else "// "
         final_msg = prefix + "FLOOK32: " + message
         
-        # Если gcode ещё не инициализирован — добавляем в очередь
+        # If gcode is not yet initialized — add to queue
         if not hasattr(self, 'gcode') or not self.gcode:
             self._queue_notification(message, is_error)
             return
@@ -866,26 +866,26 @@ class FLOOK32Sensor:
         except:
             pass
         
-        # Для критических ошибок отправляем также в Moonraker
+        # For critical errors, also send to Moonraker
         if is_error and HAS_REQUESTS:
             threading.Thread(target=self._send_moonraker_notification, 
                            args=(final_msg, is_error), daemon=True).start()
     
     def _queue_notification(self, message, is_error=False):
-        """Добавляет уведомление в очередь, если gcode ещё не доступен."""
+        """Adds a notification to the queue if gcode is not yet available."""
         if not hasattr(self, '_pending_notifications'):
             self._pending_notifications = []
         self._pending_notifications.append((message, is_error))
     
     def _flush_pending_notifications(self):
-        """Отправляет все накопленные уведомления из очереди."""
+        """Sends all accumulated notifications from the queue."""
         if hasattr(self, '_pending_notifications') and self._pending_notifications:
             for message, is_error in self._pending_notifications:
                 self._send_notification(message, is_error)
             self._pending_notifications.clear()
     
     def _send_moonraker_notification(self, message, is_error=False):
-        """Отправляет уведомление в Moonraker (если доступен)."""
+        """Sends a notification to Moonraker (if available)."""
         if not HAS_REQUESTS:
             return
         try:
@@ -898,9 +898,9 @@ class FLOOK32Sensor:
     
     def _get_moonraker_url(self):
         """
-        Определяет URL Moonraker API (http://localhost:<порт>).
-        Перебирает стандартные порты: 7125, 7126, 7130.
-        Результат кэшируется для ускорения последующих вызовов.
+        Determines the Moonraker API URL (http://localhost:<port>).
+        Iterates over standard ports: 7125, 7126, 7130.
+        The result is cached to speed up subsequent calls.
         """
         if self._moonraker_url_cache is not None:
             return self._moonraker_url_cache
@@ -918,8 +918,8 @@ class FLOOK32Sensor:
     
     def _save_device_id(self, device_id):
         """
-        Сохраняет ID устройства.
-        Приоритет: Moonraker DB -> файл ~/.flook32_id
+        Saves the device ID.
+        Priority: Moonraker DB -> file ~/.flook32_id
         """
         device_id = self._normalize_id(device_id)
         if not device_id:
@@ -928,7 +928,7 @@ class FLOOK32Sensor:
         saved = False
         moonraker_url = self._get_moonraker_url()
         
-        logging.info("=== FLOOK32 СОХРАНЕНИЕ ID ===")
+        logging.info("=== FLOOK32 SAVING ID ===")
         logging.info("ID: {}".format(device_id))
         logging.info("Moonraker URL: {}".format(moonraker_url))
         logging.info("HAS_REQUESTS: {}".format(HAS_REQUESTS))
@@ -938,7 +938,7 @@ class FLOOK32Sensor:
                 base_url = moonraker_url.rstrip('/')
                 logging.info("Base URL: {}".format(base_url))
                 
-                # Создаём namespace через PUT
+                # Create namespace via PUT
                 namespace_url = base_url + "/server/database/namespace?namespace=flook32"
                 logging.info("Namespace URL: {}".format(namespace_url))
                 
@@ -946,7 +946,7 @@ class FLOOK32Sensor:
                 logging.info("Namespace response status: {}".format(ns_response.status_code))
                 logging.info("Namespace response body: {}".format(ns_response.text[:200]))
                 
-                # Сохраняем ID
+                # Save ID
                 payload = {"namespace": "flook32", "key": "device_id", "value": device_id}
                 item_url = base_url + "/server/database/item"
                 logging.info("Item URL: {}".format(item_url))
@@ -960,45 +960,45 @@ class FLOOK32Sensor:
                     try:
                         resp_data = response.json()
                         if resp_data.get('result') or resp_data.get('value'):
-                            logging.info("✅ ID сохранен в Moonraker DB")
+                            logging.info("✅ ID saved to Moonraker DB")
                             self._storage_method = "moonraker"
                             saved = True
                         else:
-                            logging.warning("Ответ не содержит result/value: {}".format(resp_data))
+                            logging.warning("Response does not contain result/value: {}".format(resp_data))
                     except Exception as json_err:
-                        logging.warning("Не удалось распарсить JSON: {}".format(json_err))
-                        # Всё равно считаем успехом, если статус хороший
-                        logging.info("✅ ID сохранен в Moonraker DB (статус {})".format(response.status_code))
+                        logging.warning("Failed to parse JSON: {}".format(json_err))
+                        # Still consider it a success if the status is good
+                        logging.info("✅ ID saved to Moonraker DB (status {})".format(response.status_code))
                         self._storage_method = "moonraker"
                         saved = True
                 else:
-                    logging.warning("❌ Ошибка сохранения, статус: {}".format(response.status_code))
+                    logging.warning("❌ Save error, status: {}".format(response.status_code))
                     
             except Exception as e:
-                logging.error("❌ Ошибка Moonraker: {}".format(e))
+                logging.error("❌ Moonraker error: {}".format(e))
                 import traceback
                 logging.error(traceback.format_exc())
         else:
-            logging.warning("Moonraker недоступен: url={}, requests={}".format(moonraker_url, HAS_REQUESTS))
+            logging.warning("Moonraker unavailable: url={}, requests={}".format(moonraker_url, HAS_REQUESTS))
         
-        # Fallback в файл
+        # Fallback to file
         if not saved:
-            logging.info("Сохраняем в файл как fallback...")
+            logging.info("Saving to file as fallback...")
             file_path = os.path.expanduser("~/.flook32_id")
             try:
                 with open(file_path, 'w') as f:
                     f.write(device_id)
-                logging.info("✅ ID сохранен в файл: {}".format(file_path))
+                logging.info("✅ ID saved to file: {}".format(file_path))
                 self._storage_method = "file"
                 saved = True
             except Exception as e:
-                logging.error("❌ Не удалось сохранить ID в файл: {}".format(e))
+                logging.error("❌ Failed to save ID to file: {}".format(e))
         
         return saved
     
     def _load_device_id(self):
-        """Загружает сохранённый ID устройства."""
-        # Пробуем Moonraker
+        """Loads the saved device ID."""
+        # Try Moonraker
         moonraker_url = self._get_moonraker_url()
         if moonraker_url and HAS_REQUESTS:
             try:
@@ -1009,34 +1009,34 @@ class FLOOK32Sensor:
                 
                 if response.status_code == 200:
                     data = response.json()
-                    # Проверяем наличие result.value
+                    # Check for result.value
                     value = data.get('result', {}).get('value')
                     if value:
                         device_id = self._normalize_id(value)
                         if device_id:
-                            logging.info("Загружен ID из Moonraker DB: {}".format(device_id))
+                            logging.info("Loaded ID from Moonraker DB: {}".format(device_id))
                             self._storage_method = "moonraker"
                             return device_id
             except Exception as e:
-                logging.debug("Ошибка загрузки из Moonraker: {}".format(e))
+                logging.debug("Moonraker load error: {}".format(e))
         
-        # Fallback в файл
+        # Fallback to file
         file_path = os.path.expanduser("~/.flook32_id")
         try:
             if os.path.exists(file_path):
                 with open(file_path, 'r') as f:
                     device_id = self._normalize_id(f.read().strip())
                     if device_id:
-                        logging.info("Загружен ID из файла: {}".format(device_id))
+                        logging.info("Loaded ID from file: {}".format(device_id))
                         self._storage_method = "file"
                         return device_id
         except Exception as e:
-            logging.debug("Ошибка загрузки из файла: {}".format(e))
+            logging.debug("File load error: {}".format(e))
         
         return None
     
     def _delete_device_id(self):
-        """Удаляет сохранённый ID устройства."""
+        """Deletes the saved device ID."""
         moonraker_url = self._get_moonraker_url()
         if moonraker_url and HAS_REQUESTS:
             try:
@@ -1056,18 +1056,18 @@ class FLOOK32Sensor:
         self._storage_method = None
     
     # =====================================================================
-    # HTTP КОММУНИКАЦИЯ С FLOOK32
+    # HTTP COMMUNICATION WITH FLOOK32
     # =====================================================================
     
     def _http_get_json(self, path, timeout=3):
         """
-        Выполняет HTTP GET запрос к FLOOK32 и парсит JSON из ответа.
+        Performs an HTTP GET request to FLOOK32 and parses JSON from the response.
         
-        Особенности реализации:
-          • Использует низкоуровневые сокеты (без requests) — минимальные зависимости
-          • Ручной поиск JSON в ответе (пропускает HTTP-заголовки)
-          • Балансировка скобок для точного определения конца JSON
-          • Защита от частичных ответов
+        Implementation features:
+          • Uses low-level sockets (no requests) — minimal dependencies
+          • Manual search for JSON in the response (skips HTTP headers)
+          • Bracket balancing for precise JSON end detection
+          • Protection against partial responses
         """
         if not self.flook_ip:
             return None
@@ -1090,7 +1090,7 @@ class FLOOK32Sensor:
             
             text = response.decode('utf-8', errors='ignore')
             
-            # Поиск начала JSON ([ или {)
+            # Find the start of JSON ([ or {)
             start = -1
             for i, char in enumerate(text):
                 if char in ['[', '{']:
@@ -1102,7 +1102,7 @@ class FLOOK32Sensor:
             
             json_str = text[start:]
             
-            # Поиск конца JSON с учётом вложенности и строк
+            # Find the end of JSON considering nesting and strings
             bracket_count = 0
             in_string = False
             escape = False
@@ -1139,8 +1139,8 @@ class FLOOK32Sensor:
     
     def _http_post(self, path, data=None, timeout=3):
         """
-        Выполняет HTTP POST запрос к FLOOK32.
-        Поддерживает передачу данных в URL-encoded формате.
+        Performs an HTTP POST request to FLOOK32.
+        Supports sending data in URL-encoded format.
         """
         if not self.flook_ip:
             return None
@@ -1165,7 +1165,7 @@ class FLOOK32Sensor:
                 request += body
             
             sock.send(request.encode())
-            time.sleep(0.3)  # Даём ESP32 время на обработку запроса
+            time.sleep(0.3)  # Give ESP32 time to process the request
             response = b""
             while True:
                 try:
@@ -1186,43 +1186,43 @@ class FLOOK32Sensor:
     
     def _async_run(self, work_fn, on_result=None):
         """
-        Выполняет work_fn() в отдельном (не реакторном) потоке, чтобы не
-        блокировать основной поток Klippy сетевым I/O.
+        Executes work_fn() in a separate (non-reactor) thread to avoid
+        blocking the main Klippy thread with network I/O.
 
-        ВАЖНО: именно блокирующие вызовы _http_get_json/_http_post прямо
-        из обработчиков G-code (cmd_FLOOK_*) вызывали "Timer too close" /
-        MCU shutdown на слабых хостах — реактор Klipper не успевал вовремя
-        отправлять команды в MCU, пока ждал ответа по сети.
+        IMPORTANT: it was precisely the blocking calls to _http_get_json/_http_post
+        directly from G-code handlers (cmd_FLOOK_*) that caused "Timer too close" /
+        MCU shutdown on weak hosts — the Klipper reactor could not send commands
+        to the MCU in time while waiting for a network response.
 
-        Если передан on_result, он будет вызван с результатом work_fn(),
-        но уже замаршален обратно в основной поток через
-        reactor.register_async_callback — поэтому внутри on_result можно
-        безопасно вызывать gcode.respond_info(...) и менять состояние self.
+        If on_result is passed, it will be called with the result of work_fn(),
+        but marshaled back to the main thread via
+        reactor.register_async_callback — so inside on_result you can
+        safely call gcode.respond_info(...) and modify self state.
         """
         def _worker():
             try:
                 result = work_fn()
             except Exception as e:
-                logging.exception("FLOOK32 '{}': ошибка фонового запроса: {}".format(self.name, e))
+                logging.exception("FLOOK32 '{}': background request error: {}".format(self.name, e))
                 result = None
             if on_result:
                 try:
                     self.reactor.register_async_callback(
                         (lambda et, _r=result: on_result(_r)))
                 except Exception:
-                    # На случай старых версий Klipper без register_async_callback —
-                    # лучше показать результат чуть менее "безопасно", чем потерять его молча.
+                    # For older Klipper versions without register_async_callback —
+                    # better to show the result slightly less "safely" than lose it silently.
                     on_result(result)
         threading.Thread(target=_worker, daemon=True).start()
 
     def _send_config_to_esp(self):
         """
-        Отправляет пользовательскую конфигурацию на FLOOK32.
+        Sends the user configuration to FLOOK32.
         
-        Алгоритм:
-          1. Разблокирует настройки через /api/unlock-settings
-          2. Отправляет JSON с конфигурацией через POST /api/config
-          3. Блокирует настройки обратно через /api/lock-settings
+        Algorithm:
+          1. Unlocks settings via /api/unlock-settings
+          2. Sends JSON with configuration via POST /api/config
+          3. Locks settings back via /api/lock-settings
         """
         if not self.flook_ip or not self._has_custom_config:
             return False
@@ -1282,7 +1282,7 @@ class FLOOK32Sensor:
                 self._config_sending = False
     
     def _lock_settings(self):
-        """Блокирует настройки на устройстве (защита от случайных изменений)."""
+        """Locks settings on the device (protection against accidental changes)."""
         if not self.flook_ip:
             return False
         try:
@@ -1293,10 +1293,10 @@ class FLOOK32Sensor:
     
     def _update_from_api(self):
         """
-        Получает и парсит данные с FLOOK32 через HTTP GET /api/all.
+        Retrieves and parses data from FLOOK32 via HTTP GET /api/all.
         
-        Обновляет все локальные переменные состояния.
-        При потере связи запускает процедуру переподключения.
+        Updates all local state variables.
+        On connection loss, starts the reconnection procedure.
         """
         if not self.flook_ip:
             return False
@@ -1306,7 +1306,7 @@ class FLOOK32Sensor:
             self._http_errors += 1
             if self._http_errors >= self._max_http_errors and self.connection_lost_time == 0:
                 self.connection_lost_time = time.time()
-                self._send_notification("Потеряна связь с {}".format(self.flook_ip), is_error=True)
+                self._send_notification("Connection lost to {}".format(self.flook_ip), is_error=True)
                 if not self.manual_mode:
                     self.flook_ip = None
                     self.discovery_complete = False
@@ -1319,19 +1319,19 @@ class FLOOK32Sensor:
         if was_lost:
             downtime = time.time() - self.connection_lost_time
             self.connection_lost_time = 0
-            logging.info("Связь с FLOOK32 {} восстановлена (потеря: {:.1f} сек)".format(
+            logging.info("Connection to FLOOK32 {} restored (downtime: {:.1f} sec)".format(
                 self.flook_ip, downtime))
-            self._send_notification("Связь с FLOOK32 восстановлена (потеря: {:.1f} сек)".format(
+            self._send_notification("Connection to FLOOK32 restored (downtime: {:.1f} sec)".format(
                 downtime), is_error=False)
             self.auto_discover = False
         
         was_first_connection = not self._connected_before
         
         with self.temp_lock:
-            # Парсим компактный JSON ответ (короткие ключи для экономии трафика).
-            # Каждое поле защищено отдельно: битый/неожиданный тип одного поля
-            # (например, если прошивка временно прислала мусор) не должен
-            # приводить к необработанному исключению и остановке всего потока.
+            # Parse compact JSON response (short keys to save traffic).
+            # Each field is protected separately: a broken/unexpected type of one field
+            # (for example, if the firmware temporarily sends garbage) should not
+            # cause an unhandled exception and stop the entire thread.
             if 't' in data:
                 try:
                     self.target_temp = float(data['t'])
@@ -1340,8 +1340,8 @@ class FLOOK32Sensor:
             if 's' in data:
                 try:
                     state = int(data['s'])
-                    self.heater_state = (state & 1) != 0  # Бит 0 = нагреватель
-                    self.fan_state = (state & 2) != 0     # Бит 1 = вентилятор
+                    self.heater_state = (state & 1) != 0  # Bit 0 = heater
+                    self.fan_state = (state & 2) != 0     # Bit 1 = fan
                 except (TypeError, ValueError):
                     pass
             if 'fp' in data:
@@ -1381,8 +1381,8 @@ class FLOOK32Sensor:
                     self._save_device_id(self.device_id)
                 
                 if was_first_connection and not self._device_found_after_reset:
-                    logging.info("Устройство найдено, ID={}".format(self.device_id))
-                    # В ручном режиме отправляем UDP-запрос с ID один раз
+                    logging.info("Device found, ID={}".format(self.device_id))
+                    # In manual mode, send a UDP request with ID once
                     if self.manual_mode and self.saved_device_id:
                         self._send_manual_udp_discovery()
                     self._device_found_after_reset = True
@@ -1393,13 +1393,13 @@ class FLOOK32Sensor:
         return True
     
     # =====================================================================
-    # UDP ОБНАРУЖЕНИЕ (ЕДИНЫЙ МЕТОД)
+    # UDP DISCOVERY (UNIFIED METHOD)
     # =====================================================================
     
     def _connect_to(self, ip, device_id):
         """
-        Подключается к найденному устройству.
-        Если уже подключены к этому же IP — не спамим уведомлениями.
+        Connects to the discovered device.
+        If already connected to the same IP — do not spam notifications.
         """
         if self.flook_ip == ip and self.discovery_complete:
             return
@@ -1412,8 +1412,8 @@ class FLOOK32Sensor:
             self.saved_device_id = device_id
             self._save_device_id(device_id)
         
-        logging.info("UDP: подключен к {}, ID={}".format(ip, device_id))
-        self._send_notification("Найден FLOOK32 (IP: {}, ID: {})".format(
+        logging.info("UDP: connected to {}, ID={}".format(ip, device_id))
+        self._send_notification("FLOOK32 found (IP: {}, ID: {})".format(
             ip, device_id if device_id else 'None'))
         
         if HAS_WEBSOCKET:
@@ -1421,8 +1421,8 @@ class FLOOK32Sensor:
 
     def _send_manual_udp_discovery(self):
         """
-        Отправляет один UDP-запрос с ID в ручном режиме.
-        Это позволяет FLOOK32 сохранить IP Klipper для работы Moonraker.
+        Sends a single UDP request with ID in manual mode.
+        This allows FLOOK32 to save Klipper's IP for Moonraker operation.
         """
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
@@ -1431,17 +1431,17 @@ class FLOOK32Sensor:
             msg = "FLOOK_DISCOVERY:{}".format(self.saved_device_id)
             sock.sendto(msg.encode(), (UDP_BROADCAST_IP, UDP_PORT))
             sock.close()
-            logging.info("Ручной режим: UDP-запрос с ID отправлен на broadcast")
+            logging.info("Manual mode: UDP request with ID sent to broadcast")
         except Exception as e:
-            logging.debug("Ручной режим: ошибка UDP: {}".format(e))
+            logging.debug("Manual mode: UDP error: {}".format(e))
     
     def _udp_discovery_loop(self):
         """
-        Единый цикл UDP-обнаружения. Отправляет broadcast-запрос
-        и ждёт ответы от FLOOK32. Работает в одном потоке с одним сокетом.
+        Unified UDP discovery loop. Sends a broadcast request
+        and waits for responses from FLOOK32. Runs in one thread with one socket.
         
-        Отправляет запрос с ID (если сохранён), получает TRUE/FALSE,
-        подключается к нужному устройству.
+        Sends a request with ID (if saved), receives TRUE/FALSE,
+        connects to the desired device.
         """
         sock = None
         try:
@@ -1451,7 +1451,7 @@ class FLOOK32Sensor:
             sock.bind(('0.0.0.0', UDP_PORT))
             sock.settimeout(2.0)
         except Exception as e:
-            logging.error("UDP: не удалось открыть сокет: {}".format(e))
+            logging.error("UDP: failed to open socket: {}".format(e))
             return
         
         while self.udp_running and not self.stop_thread:
@@ -1489,7 +1489,7 @@ class FLOOK32Sensor:
                         else:
                             continue
                         
-                        logging.debug("UDP ответ: {}, match={}, ID={}".format(ip, match_status, device_id))
+                        logging.debug("UDP response: {}, match={}, ID={}".format(ip, match_status, device_id))
                         
                         if self.saved_device_id:
                             if match_status and device_id == self.saved_device_id:
@@ -1504,7 +1504,7 @@ class FLOOK32Sensor:
                         break
                         
             except Exception as e:
-                logging.debug("UDP ошибка: {}".format(e))
+                logging.debug("UDP error: {}".format(e))
             
             time.sleep(30 if self.flook_ip else 5)
         
@@ -1512,11 +1512,11 @@ class FLOOK32Sensor:
             sock.close()
     
     # =====================================================================
-    # WEBSOCKET (REAL-TIME ОБНОВЛЕНИЯ)
+    # WEBSOCKET (REAL-TIME UPDATES)
     # =====================================================================
     
     def _start_websocket(self):
-        """Запускает WebSocket подключение к FLOOK32."""
+        """Starts a WebSocket connection to FLOOK32."""
         if not HAS_WEBSOCKET or not self.flook_ip:
             return
         
@@ -1529,7 +1529,7 @@ class FLOOK32Sensor:
         self.ws_thread.start()
     
     def _websocket_loop(self):
-        """Цикл WebSocket с автоматическим переподключением при обрыве."""
+        """WebSocket loop with automatic reconnection on disconnect."""
         while self.ws_running and not self.stop_thread:
             try:
                 url = "ws://{}:{}/ws".format(self.flook_ip, self.flook_port)
@@ -1548,12 +1548,12 @@ class FLOOK32Sensor:
                 time.sleep(self.ws_reconnect_delay)
     
     def _on_ws_open(self, ws):
-        """Callback: WebSocket соединение установлено."""
+        """Callback: WebSocket connection established."""
         self.ws_connected = True
-        logging.info("WebSocket подключен к {}".format(self.flook_ip))
+        logging.info("WebSocket connected to {}".format(self.flook_ip))
     
     def _on_ws_message(self, ws, message):
-        """Callback: получено сообщение WebSocket с метриками."""
+        """Callback: WebSocket message with metrics received."""
         try:
             data = json.loads(message)
             with self.temp_lock:
@@ -1585,15 +1585,15 @@ class FLOOK32Sensor:
             pass
     
     def _on_ws_error(self, ws, error):
-        """Callback: ошибка WebSocket."""
+        """Callback: WebSocket error."""
         self.ws_connected = False
     
     def _on_ws_close(self, ws, close_status_code, close_msg):
-        """Callback: WebSocket соединение закрыто."""
+        """Callback: WebSocket connection closed."""
         self.ws_connected = False
     
     def _stop_websocket(self):
-        """Останавливает WebSocket соединение и поток."""
+        """Stops the WebSocket connection and thread."""
         self.ws_running = False
         if self.ws:
             try:
@@ -1604,16 +1604,16 @@ class FLOOK32Sensor:
         self.ws_connected = False
     
     # =====================================================================
-    # МОНИТОРИНГ ОШИБОК FLOOK32
+    # FLOOK32 ERROR MONITORING
     # =====================================================================
     
     def _check_and_report_errors(self):
         """
-        Проверяет журнал ошибок FLOOK32 через API и уведомляет о новых
-        критических ошибках в консоль Klipper.
+        Checks the FLOOK32 error log via API and notifies about new
+        critical errors in the Klipper console.
         
-        Каждая ошибка выводится только один раз (отслеживается по timestamp).
-        Старые ошибки игнорируются согласно error_notification_max_age.
+        Each error is output only once (tracked by timestamp).
+        Old errors are ignored according to error_notification_max_age.
         """
         if not self.enable_error_notifications or not self.flook_ip:
             return
@@ -1659,7 +1659,7 @@ class FLOOK32Sensor:
             count = err.get('count', 1)
             count_str = " (x{})".format(count) if count > 1 else ""
             
-            error_message = "КРИТИЧЕСКАЯ ОШИБКА [{}]: {}{}".format(time_str, msg, count_str)
+            error_message = "CRITICAL ERROR [{}]: {}{}".format(time_str, msg, count_str)
             self._send_notification(error_message, is_error=True)
             
             recommendations = self._get_recommendations_text(msg)
@@ -1667,33 +1667,33 @@ class FLOOK32Sensor:
                 self._send_notification(recommendations, is_error=True)
     
     def _get_recommendations_text(self, error_msg):
-        """Возвращает рекомендации по устранению типовых ошибок."""
-        if 'ПЕРЕГРЕВ НАГРЕВАТЕЛЯ' in error_msg or 'criticalOverheat' in error_msg:
-            return "Рекомендации: проверьте SSR, нагреватель и вентилятор"
-        elif 'ПЕРЕГРЕВ ВОЗДУХА' in error_msg or 'airOverheat' in error_msg:
-            return "Рекомендации: проверьте циркуляцию воздуха"
+        """Returns recommendations for resolving typical errors."""
+        if 'HEATER OVERHEAT' in error_msg or 'criticalOverheat' in error_msg:
+            return "Recommendations: check SSR, heater and fan"
+        elif 'AIR OVERHEAT' in error_msg or 'airOverheat' in error_msg:
+            return "Recommendations: check air circulation"
         elif 'THERMAL RUNAWAY' in error_msg:
-            return "Рекомендации: проверьте питание 220В и датчик температуры MAX6675"
+            return "Recommendations: check 220V power and MAX6675 temperature sensor"
         elif 'MAX6675' in error_msg:
-            return "Рекомендации: проверьте подключение MAX6675 и термопары"
+            return "Recommendations: check MAX6675 and thermocouple connection"
         elif 'DS18B20' in error_msg:
-            return "Рекомендации: проверьте подключение DS18B20"
+            return "Recommendations: check DS18B20 connection"
         else:
-            return "Рекомендации: проверьте подключение FLOOK32 и лог ошибок"
+            return "Recommendations: check FLOOK32 connection and error log"
     
     # =====================================================================
-    # ОСНОВНОЙ ЦИКЛ ОПРОСА
+    # MAIN POLLING LOOP
     # =====================================================================
     
     def _sensor_loop(self):
         """
-        Основной цикл работы сенсора. Выполняется в отдельном потоке.
+        Main sensor operation loop. Runs in a separate thread.
         
-        Задачи:
-          • Периодический опрос FLOOK32 (HTTP или WebSocket)
-          • Отправка конфигурации при первом подключении
-          • Проверка ошибок FLOOK32
-          • Передача температуры в Klipper через callback
+        Tasks:
+          • Periodic polling of FLOOK32 (HTTP or WebSocket)
+          • Sending configuration on first connection
+          • Checking FLOOK32 errors
+          • Passing temperature to Klipper via callback
         """
         mcu = self.printer.lookup_object('mcu')
         last_error_check = 0
@@ -1702,21 +1702,21 @@ class FLOOK32Sensor:
             try:
                 current_time = time.time()
 
-                # Проверка ошибок FLOOK32
+                # Check FLOOK32 errors
                 if current_time - last_error_check >= self.error_check_interval:
                     last_error_check = current_time
                     try:
                         self._check_and_report_errors()
                     except Exception:
                         logging.exception(
-                            "FLOOK32 '{}': ошибка проверки журнала ошибок".format(self.name))
+                            "FLOOK32 '{}': error checking error log".format(self.name))
 
                 if self.flook_ip:
-                    # Запуск WebSocket если доступен
+                    # Start WebSocket if available
                     if HAS_WEBSOCKET and not self.ws_connected and not self.ws_thread:
                         self._start_websocket()
 
-                    # Отправка конфигурации при первом подключении
+                    # Send configuration on first connection
                     if (self._has_custom_config and not self.config_sent and
                         self.config_apply_attempts < self.max_config_attempts):
                         with self._queue_lock:
@@ -1725,16 +1725,16 @@ class FLOOK32Sensor:
                             if self._send_config_to_esp():
                                 self.config_sent = True
                                 if not self._config_sent_message:
-                                    self._send_notification("Конфигурация сохранена")
+                                    self._send_notification("Configuration saved")
                                     self._config_sent_message = True
                             else:
                                 self.config_apply_attempts += 1
 
-                    # HTTP опрос (если WebSocket не подключен)
+                    # HTTP polling (if WebSocket is not connected)
                     if not self.ws_connected:
                         self._update_from_api()
 
-                    # Передача температуры в Klipper
+                    # Pass temperature to Klipper
                     with self.temp_lock:
                         temp = self.air_temp
 
@@ -1743,102 +1743,102 @@ class FLOOK32Sensor:
                     if hasattr(self, '_callback'):
                         self._callback(print_time, temp)
             except Exception:
-                # Любая непредвиденная ошибка (сеть, парсинг, mcu ещё не готов и т.п.)
-                # не должна насовсем убивать поток датчика — иначе температура
-                # перестанет обновляться до перезапуска Klipper.
+                # Any unexpected error (network, parsing, mcu not ready yet, etc.)
+                # should not kill the sensor thread permanently — otherwise temperature
+                # will stop updating until Klipper is restarted.
                 logging.exception(
-                    "FLOOK32 '{}': необработанная ошибка в цикле опроса".format(self.name))
+                    "FLOOK32 '{}': unhandled error in polling loop".format(self.name))
 
             time.sleep(self.report_interval)
     
     # =====================================================================
-    # G-CODE КОМАНДЫ
+    # G-CODE COMMANDS
     # =====================================================================
     
     def cmd_FLOOK_STATUS(self, gcmd):
-        """FLOOK_STATUS — показать полный статус устройства."""
+        """FLOOK_STATUS — show full device status."""
         with self.temp_lock:
             status = "═══ FLOOK32 '{}' ═══\n".format(self.name)
-            status += "Режим сенсора: air\n"
+            status += "Sensor mode: air\n"
             if self.manual_mode:
-                status += "Режим подключения: РУЧНОЙ\nIP: {}:{}\n".format(self.flook_ip, self.flook_port)
+                status += "Connection mode: MANUAL\nIP: {}:{}\n".format(self.flook_ip, self.flook_port)
             elif self.flook_ip:
-                status += "Режим подключения: АВТОМАТИЧЕСКИЙ\nIP: {}:{}\n".format(self.flook_ip, self.flook_port)
+                status += "Connection mode: AUTOMATIC\nIP: {}:{}\n".format(self.flook_ip, self.flook_port)
             else:
-                status += "Режим подключения: АВТОМАТИЧЕСКИЙ\nIP: Не подключен\n"
-            status += "Воздух: {:.1f}°C\n".format(self.air_temp)
-            status += "Нагреватель: {:.1f}°C\n".format(self.heater_temp)
-            status += "Цель: {:.1f}°C\n".format(self.target_temp)
-            status += "Блокировка: {}\n".format('ДА' if self.system_locked else 'НЕТ')
-            status += "Ошибок: {}\n".format(self.error_count)
+                status += "Connection mode: AUTOMATIC\nIP: Not connected\n"
+            status += "Air: {:.1f}°C\n".format(self.air_temp)
+            status += "Heater: {:.1f}°C\n".format(self.heater_temp)
+            status += "Target: {:.1f}°C\n".format(self.target_temp)
+            status += "Locked: {}\n".format('YES' if self.system_locked else 'NO')
+            status += "Errors: {}\n".format(self.error_count)
             gcmd.respond_info(status)
     
     def cmd_FLOOK_TEMP(self, gcmd):
-        """FLOOK_TEMP — показать текущую температуру."""
+        """FLOOK_TEMP — show current temperature."""
         with self.temp_lock:
-            gcmd.respond_info("Воздух: {:.1f}°C, Нагреватель: {:.1f}°C".format(
+            gcmd.respond_info("Air: {:.1f}°C, Heater: {:.1f}°C".format(
                 self.air_temp, self.heater_temp))
     
     def cmd_FLOOK_SET(self, gcmd):
-        """FLOOK_SET S=<температура> — установить целевую температуру."""
+        """FLOOK_SET S=<temperature> — set target temperature."""
         temp = gcmd.get_float('S', 0.0)
         if temp < 0 or temp > 70:
-            gcmd.respond_info("Температура должна быть между 0 и 70°C")
+            gcmd.respond_info("Temperature must be between 0 and 70°C")
             return
         if not self.flook_ip:
-            gcmd.respond_info("Нет подключенного устройства")
+            gcmd.respond_info("No connected device")
             return
 
         def _done(result):
             if result and ("OK" in result or "success" in result):
                 with self.temp_lock:
                     self.target_temp = temp
-                self.gcode.respond_info("Целевая температура установлена на {}°C".format(temp))
+                self.gcode.respond_info("Target temperature set to {}°C".format(temp))
             else:
-                self.gcode.respond_info("Не удалось установить температуру")
+                self.gcode.respond_info("Failed to set temperature")
 
         self._async_run(
             lambda: self._http_post("/api/target?value={}".format(temp)), _done)
     
     def cmd_FLOOK_OFF(self, gcmd):
-        """FLOOK_OFF — аварийное выключение нагрева (не блокирует реактор Klipper)."""
+        """FLOOK_OFF — emergency heater shutdown (does not block the Klipper reactor)."""
         if not self.flook_ip:
-            gcmd.respond_info("Нет подключенного устройства")
+            gcmd.respond_info("No connected device")
             return
 
         def _done(result):
             if result and ("OK" in result or "success" in result):
-                self.gcode.respond_info("Нагрев выключен")
+                self.gcode.respond_info("Heating turned off")
             else:
-                self.gcode.respond_info("Не удалось выключить нагрев")
+                self.gcode.respond_info("Failed to turn off heating")
 
         self._async_run(lambda: self._http_post("/api/heater-off"), _done)
     
     def cmd_FLOOK_DISCOVER(self, gcmd):
-        """FLOOK_DISCOVER — принудительный поиск устройств в сети (неблокирующий)."""
-        gcmd.respond_info("Поиск устройств...")
+        """FLOOK_DISCOVER — forced device discovery on the network (non-blocking)."""
+        gcmd.respond_info("Searching for devices...")
 
         def _wait_and_report():
-            # Раньше здесь был time.sleep(5) прямо в обработчике команды —
-            # это блокировало реактор Klipper на 5 секунд. Теперь ждём
-            # в фоновом потоке, а реактор в это время работает как обычно.
+            # Previously there was a time.sleep(5) right in the command handler —
+            # this blocked the Klipper reactor for 5 seconds. Now we wait
+            # in a background thread while the reactor works as usual.
             time.sleep(5)
             return self.flook_ip, self.saved_device_id
 
         def _done(result):
             ip, device_id = result
             if ip:
-                self.gcode.respond_info("Устройство найдено: {}, ID: {}".format(ip, device_id))
+                self.gcode.respond_info("Device found: {}, ID: {}".format(ip, device_id))
             else:
-                self.gcode.respond_info("Устройства не найдены")
+                self.gcode.respond_info("No devices found")
 
         self._async_run(_wait_and_report, _done)
     
     def cmd_FLOOK_SET_IP(self, gcmd):
-        """FLOOK_SET_IP IP=<адрес> — установить IP вручную."""
+        """FLOOK_SET_IP IP=<address> — set IP manually."""
         ip = gcmd.get('IP')
         if not ip:
-            gcmd.respond_info("Использование: FLOOK_SET_IP IP=192.168.1.100")
+            gcmd.respond_info("Usage: FLOOK_SET_IP IP=192.168.1.100")
             return
         try:
             socket.inet_aton(ip)
@@ -1848,93 +1848,93 @@ class FLOOK32Sensor:
             self._http_errors = 0
             if HAS_WEBSOCKET:
                 self._start_websocket()
-            gcmd.respond_info("IP установлен на {}".format(ip))
+            gcmd.respond_info("IP set to {}".format(ip))
         except:
-            gcmd.respond_info("Неверный IP: {}".format(ip))
+            gcmd.respond_info("Invalid IP: {}".format(ip))
     
     def cmd_FLOOK_ADAPT_START(self, gcmd):
-        """FLOOK_ADAPT_START TARGET=<°C> — запуск адаптации."""
+        """FLOOK_ADAPT_START TARGET=<°C> — start adaptation."""
         target = gcmd.get_float('TARGET', 60.0, minval=40, maxval=70)
         if not self.flook_ip:
-            gcmd.respond_info("Нет подключенного устройства")
+            gcmd.respond_info("No connected device")
             return
 
         def _done(result):
             if result and "started" in result.lower():
-                self.gcode.respond_info("Адаптация запущена до {}°C".format(target))
+                self.gcode.respond_info("Adaptation started up to {}°C".format(target))
             else:
-                self.gcode.respond_info("Не удалось запустить адаптацию")
+                self.gcode.respond_info("Failed to start adaptation")
 
         self._async_run(
             lambda: self._http_post("/api/adapt/start?target={}".format(target)), _done)
     
     def cmd_FLOOK_ADAPT_ABORT(self, gcmd):
-        """FLOOK_ADAPT_ABORT — прервать адаптацию."""
+        """FLOOK_ADAPT_ABORT — abort adaptation."""
         if not self.flook_ip:
-            gcmd.respond_info("Нет подключенного устройства")
+            gcmd.respond_info("No connected device")
             return
 
         def _done(result):
             if result:
-                self.gcode.respond_info("Адаптация прервана")
+                self.gcode.respond_info("Adaptation aborted")
             else:
-                self.gcode.respond_info("Не удалось прервать адаптацию")
+                self.gcode.respond_info("Failed to abort adaptation")
 
         self._async_run(lambda: self._http_post("/api/adapt/abort"), _done)
     
     def cmd_FLOOK_ADAPT_STATUS(self, gcmd):
-        """FLOOK_ADAPT_STATUS — статус адаптации."""
+        """FLOOK_ADAPT_STATUS — adaptation status."""
         if not self.flook_ip:
-            gcmd.respond_info("Нет подключенного устройства")
+            gcmd.respond_info("No connected device")
             return
 
         def _done(data):
             if data:
-                status = "Адаптация: {}\n".format('ВКЛ' if data.get('inProgress') else 'ВЫКЛ')
-                status += "Прогресс: {}%\n".format(data.get('progress', 0))
-                status += "Сообщение: {}".format(data.get('message', ''))
+                status = "Adaptation: {}\n".format('ON' if data.get('inProgress') else 'OFF')
+                status += "Progress: {}%\n".format(data.get('progress', 0))
+                status += "Message: {}".format(data.get('message', ''))
                 self.gcode.respond_info(status)
             else:
-                self.gcode.respond_info("Не удалось получить статус")
+                self.gcode.respond_info("Failed to get status")
 
         self._async_run(lambda: self._http_get_json("/api/adapt/status"), _done)
     
     def cmd_FLOOK_UNLOCK(self, gcmd):
-        """FLOOK_UNLOCK [PASSWORD=<пароль>] — разблокировать настройки."""
+        """FLOOK_UNLOCK [PASSWORD=<password>] — unlock settings."""
         password = gcmd.get('PASSWORD', self.unlock_password)
         if not self.flook_ip:
-            gcmd.respond_info("Нет подключенного устройства")
+            gcmd.respond_info("No connected device")
             return
 
         def _done(result):
             if result and "unlocked" in result.lower():
-                self.gcode.respond_info("Настройки разблокированы")
+                self.gcode.respond_info("Settings unlocked")
             else:
-                self.gcode.respond_info("Не удалось разблокировать")
+                self.gcode.respond_info("Failed to unlock")
 
         self._async_run(
             lambda: self._http_post("/api/unlock-settings?password={}".format(password)), _done)
     
     def cmd_FLOOK_LOCK(self, gcmd):
-        """FLOOK_LOCK — заблокировать настройки."""
+        """FLOOK_LOCK — lock settings."""
         if not self.flook_ip:
-            gcmd.respond_info("Нет подключенного устройства")
+            gcmd.respond_info("No connected device")
             return
 
         def _done(result):
             if result:
-                self.gcode.respond_info("Настройки заблокированы")
+                self.gcode.respond_info("Settings locked")
             else:
-                self.gcode.respond_info("Не удалось заблокировать")
+                self.gcode.respond_info("Failed to lock")
 
         self._async_run(lambda: self._http_post("/api/lock-settings"), _done)
     
     def cmd_FLOOK_REBOOT(self, gcmd):
-        """FLOOK_REBOOT — перезагрузить FLOOK32 (не блокирует реактор)."""
+        """FLOOK_REBOOT — reboot FLOOK32 (does not block the reactor)."""
         if not self.flook_ip:
-            gcmd.respond_info("Нет подключенного устройства")
+            gcmd.respond_info("No connected device")
             return
-        gcmd.respond_info("Перезагрузка FLOOK32...")
+        gcmd.respond_info("Rebooting FLOOK32...")
 
         def _work():
             self._http_post("/api/reboot")
@@ -1948,25 +1948,25 @@ class FLOOK32Sensor:
             self.config_sent = False
             self._config_sent_message = False
             self._http_errors = 0
-            self.gcode.respond_info("Команда отправлена")
+            self.gcode.respond_info("Command sent")
 
         self._async_run(_work, _done)
     
     def cmd_FLOOK_ERRORS(self, gcmd):
-        """FLOOK_ERRORS — показать журнал ошибок (последние 10 записей)."""
+        """FLOOK_ERRORS — show error log (last 10 entries)."""
         if not self.flook_ip:
-            gcmd.respond_info("Нет подключенного устройства")
+            gcmd.respond_info("No connected device")
             return
 
         def _done(data):
             if not data:
-                self.gcode.respond_info("Не удалось получить журнал ошибок")
+                self.gcode.respond_info("Failed to get error log")
                 return
             errors_list = data if isinstance(data, list) else data.get('errorLog', [])
             if not errors_list:
-                self.gcode.respond_info("Журнал ошибок пуст")
+                self.gcode.respond_info("Error log is empty")
                 return
-            self.gcode.respond_info("=== ЖУРНАЛ ОШИБОК ===")
+            self.gcode.respond_info("=== ERROR LOG ===")
             for err in errors_list[-10:]:
                 ts = err.get('ts', 0)
                 hours = ts // 3600
@@ -1981,16 +1981,16 @@ class FLOOK32Sensor:
         self._async_run(lambda: self._http_get_json("/api/error-log"), _done)
     
     def cmd_FLOOK_CONFIG_GET(self, gcmd):
-        """FLOOK_CONFIG_GET — показать текущую конфигурацию устройства."""
+        """FLOOK_CONFIG_GET — show current device configuration."""
         if not self.flook_ip:
-            gcmd.respond_info("Нет подключенного устройства")
+            gcmd.respond_info("No connected device")
             return
 
         def _done(data):
             if not data:
-                self.gcode.respond_info("Не удалось получить конфигурацию")
+                self.gcode.respond_info("Failed to get configuration")
                 return
-            status = "⚙️ КОНФИГУРАЦИЯ FLOOK32:\n"
+            status = "⚙️ FLOOK32 CONFIGURATION:\n"
             status += "  maxHeaterTemp: {}°C\n".format(data.get('mt', 0))
             status += "  criticalTemp: {}°C\n".format(data.get('ct', 0))
             status += "  maxAirTemp: {}°C\n".format(data.get('ma', 0))
@@ -1998,19 +1998,19 @@ class FLOOK32Sensor:
             status += "  heaterHysteresis: {}°C\n".format(data.get('hh', 0))
             status += "  fanOnTemp: {}°C\n".format(data.get('fT', 0))
             status += "  maxFanDuty: {}\n".format(data.get('mFD', 1023))
-            status += "  invertHeaterSignal: {}\n".format('Да' if data.get('iH') else 'Нет')
-            status += "  invertFanSignal: {}\n".format('Да' if data.get('iF') else 'Нет')
-            status += "  autoShutdownEnabled: {}\n".format('Да' if data.get('aSd') else 'Нет')
+            status += "  invertHeaterSignal: {}\n".format('Yes' if data.get('iH') else 'No')
+            status += "  invertFanSignal: {}\n".format('Yes' if data.get('iF') else 'No')
+            status += "  autoShutdownEnabled: {}\n".format('Yes' if data.get('aSd') else 'No')
             status += "  autoShutdownMinutes: {}\n".format(data.get('aSm', 30))
-            status += "  adaptationPerformed: {}\n".format('Да' if data.get('aPd') else 'Нет')
+            status += "  adaptationPerformed: {}\n".format('Yes' if data.get('aPd') else 'No')
             self.gcode.respond_info(status)
 
         self._async_run(lambda: self._http_get_json("/api/config"), _done)
     
     def cmd_FLOOK_AUTO_SHUTDOWN(self, gcmd):
-        """FLOOK_AUTO_SHUTDOWN [ENABLE=1] [MINUTES=30] — настройка автоотключения."""
+        """FLOOK_AUTO_SHUTDOWN [ENABLE=1] [MINUTES=30] — configure auto-shutdown."""
         if not self.flook_ip:
-            gcmd.respond_info("Нет подключенного устройства")
+            gcmd.respond_info("No connected device")
             return
         enable = gcmd.get_int('ENABLE', None)
         minutes = gcmd.get_int('MINUTES', None)
@@ -2024,39 +2024,39 @@ class FLOOK32Sensor:
 
             def _done(result):
                 if result and ("OK" in result or "success" in result):
-                    self.gcode.respond_info("Автоотключение обновлено")
+                    self.gcode.respond_info("Auto-shutdown updated")
                 else:
-                    self.gcode.respond_info("Не удалось обновить")
+                    self.gcode.respond_info("Failed to update")
 
             self._async_run(
                 lambda: self._http_post("/api/moonraker-shutdown?{}".format(query)), _done)
         else:
-            gcmd.respond_info("Использование: FLOOK_AUTO_SHUTDOWN ENABLE=1 MINUTES=30")
+            gcmd.respond_info("Usage: FLOOK_AUTO_SHUTDOWN ENABLE=1 MINUTES=30")
     
     def cmd_FLOOK_AUTO_SHUTDOWN_STATUS(self, gcmd):
-        """FLOOK_AUTO_SHUTDOWN_STATUS — статус автоотключения."""
+        """FLOOK_AUTO_SHUTDOWN_STATUS — auto-shutdown status."""
         if not self.flook_ip:
-            gcmd.respond_info("Нет подключенного устройства")
+            gcmd.respond_info("No connected device")
             return
 
         def _done(data):
             if data:
                 enabled = data.get('aSd', False)
                 minutes = data.get('aSm', 30)
-                self.gcode.respond_info("Автоотключение: {} ({} мин)".format(
-                    'ВКЛ' if enabled else 'ВЫКЛ', minutes))
+                self.gcode.respond_info("Auto-shutdown: {} ({} min)".format(
+                    'ON' if enabled else 'OFF', minutes))
             else:
-                self.gcode.respond_info("Не удалось получить статус")
+                self.gcode.respond_info("Failed to get status")
 
         self._async_run(lambda: self._http_get_json("/api/config"), _done)
     
     def cmd_FLOOK_RESET_ID(self, gcmd):
         """
-        FLOOK_RESET_ID — сбросить сохранённый ID устройства и начать перепоиск.
-        Полезно при замене FLOOK32 или смене устройства.
+        FLOOK_RESET_ID — reset the saved device ID and start re-discovery.
+        Useful when replacing FLOOK32 or changing the device.
         """
         if self.manual_mode:
-            gcmd.respond_info("Ручной режим, сброс ID не требуется")
+            gcmd.respond_info("Manual mode, ID reset not required")
             return
         
         old_id = self.saved_device_id if self.saved_device_id else "None"
@@ -2073,45 +2073,45 @@ class FLOOK32Sensor:
         
         self._delete_device_id()
         
-        gcmd.respond_info("ID сброшен (был: {})".format(old_id))
-        gcmd.respond_info("UDP-цикл сам найдёт устройство за 1-2 итерации...")
+        gcmd.respond_info("ID reset (was: {})".format(old_id))
+        gcmd.respond_info("UDP loop will find the device in 1-2 iterations...")
     
     def cmd_FLOOK_CALIBRATE(self, gcmd):
-        """FLOOK_CALIBRATE TEMP=<эталон> — калибровка MAX6675."""
+        """FLOOK_CALIBRATE TEMP=<reference> — MAX6675 calibration."""
         temp = gcmd.get_float('TEMP', 100.0, minval=0, maxval=400)
         if not self.flook_ip:
-            gcmd.respond_info("Нет подключенного устройства")
+            gcmd.respond_info("No connected device")
             return
 
         def _done(result):
             if result and ("OK" in result or "success" in result):
-                self.gcode.respond_info("Калибровка выполнена с эталоном {}°C".format(temp))
+                self.gcode.respond_info("Calibration completed with reference {}°C".format(temp))
             else:
-                self.gcode.respond_info("Не удалось выполнить калибровку")
+                self.gcode.respond_info("Failed to perform calibration")
 
         self._async_run(
             lambda: self._http_post("/api/calibrate-max6675?temp={}".format(temp)), _done)
     
     # =====================================================================
-    # ИНТЕРФЕЙС ДЛЯ KLIPPER
+    # KLIPPER INTERFACE
     # =====================================================================
     
     def setup_minmax(self, min_temp, max_temp):
-        """Установка диапазона температур (вызывается Klipper)."""
+        """Set temperature range (called by Klipper)."""
         pass
     
     def get_report_time_delta(self):
-        """Возвращает интервал опроса в секундах."""
+        """Returns the polling interval in seconds."""
         return self.report_interval
     
     def setup_callback(self, cb):
-        """Устанавливает callback для передачи температуры в Klipper."""
+        """Sets the callback for passing temperature to Klipper."""
         self._callback = cb
     
     def get_temp(self, eventtime):
         """
-        Возвращает текущую температуру воздуха.
-        Вызывается Klipper для обновления показаний датчика.
+        Returns the current air temperature.
+        Called by Klipper to update sensor readings.
         """
         with self.temp_lock:
             temp = self.air_temp
@@ -2120,10 +2120,10 @@ class FLOOK32Sensor:
             return temp, 0.0
     
     def stats(self, eventtime):
-        """Возвращает статистику для отчётов Klipper."""
+        """Returns statistics for Klipper reports."""
         with self.temp_lock:
             temp = self.air_temp
-            status = '{}: воздух={:.1f} цель={:.1f}'.format(
+            status = '{}: air={:.1f} target={:.1f}'.format(
                 self.name, temp, self.target_temp)
             if self.flook_ip:
                 status += ' ip={}'.format(self.flook_ip)
@@ -2131,8 +2131,8 @@ class FLOOK32Sensor:
     
     def close(self):
         """
-        Корректное завершение работы: остановка всех потоков,
-        закрытие WebSocket и UDP-сокета.
+        Graceful shutdown: stop all threads,
+        close WebSocket and UDP socket.
         """
         self.stop_thread = True
         self.udp_running = False
@@ -2141,13 +2141,13 @@ class FLOOK32Sensor:
             self.sensor_thread.join(timeout=2.0)
 
 # ============================================================================
-# ТОЧКА ВХОДА ДЛЯ KLIPPER
+# ENTRY POINT FOR KLIPPER
 # ============================================================================
 
 def load_config(config):
     """
-    Регистрирует сенсор FLOOK32 в Klipper.
-    Вызывается автоматически при загрузке плагина.
+    Registers the FLOOK32 sensor in Klipper.
+    Called automatically when the plugin loads.
     """
     pheaters = config.get_printer().load_object(config, "heaters")
     pheaters.add_sensor_factory("flook32", FLOOK32Sensor)
