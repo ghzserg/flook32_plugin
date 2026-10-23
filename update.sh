@@ -7,6 +7,7 @@ if [ -f /ZMOD ]; then
     exit 0
 fi
 
-rm -f /usr/data/zmod/klipper/klippy/extras/flook32.py /usr/prog/klipper/klippy/extras/flook32.py
-ln -s /opt/config/mod_data/plugins/flook32/flook32.py /usr/data/zmod/klipper/klippy/extras
-ln -s /opt/config/mod_data/plugins/flook32/flook32.py /usr/prog/klipper/klippy/extras
+rm -f /usr/data/zmod/klipper/klippy/extras/flook32.py /usr/prog/klipper/klippy/extras/flook32.py /opt/klipper/klippy/flook32.py
+[ -d /usr/data/zmod/klipper/klippy/extras ] && ln -s /opt/config/mod_data/plugins/flook32/flook32.py /usr/data/zmod/klipper/klippy/extras
+[ -d /usr/prog/klipper/klippy/extras ] && ln -s /opt/config/mod_data/plugins/flook32/flook32.py /usr/prog/klipper/klippy/extras
+[ -d /opt/klipper/klippy] && ln -s /opt/config/mod_data/plugins/flook32/flook32.py /opt/klipper/klippy
