@@ -8,6 +8,6 @@ if [ -f /ZMOD ]; then
     exit 0
 fi
 
-rm -f /usr/data/zmod/klipper/klippy/extras/flook32.py /usr/prog/klipper/klippy/extras/flook32.py
+rm -f /usr/data/zmod/klipper/klippy/extras/flook32.py /usr/prog/klipper/klippy/extras/flook32.py /opt/klipper/klippy/flook32.py
 
 echo "flook32 uninstalled"
